@@ -8,25 +8,32 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 1) {
+class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE transactions(
                 id TEXT PRIMARY KEY,
                 operation_no TEXT,
+                transaction_date TEXT,
                 currency TEXT NOT NULL,
                 type TEXT NOT NULL,
                 source TEXT NOT NULL,
+                source_code TEXT,
+                statement_seq INTEGER,
+                batch_id TEXT,
                 pnr TEXT,
                 route TEXT,
                 amount REAL NOT NULL DEFAULT 0,
+                ledger_effect REAL,
                 discount REAL NOT NULL DEFAULT 0,
+                balance_after REAL,
                 base_fare REAL,
                 reference_total REAL,
                 airline TEXT,
                 review_state TEXT NOT NULL,
                 warning TEXT,
                 note TEXT,
+                flags TEXT,
                 raw_text TEXT,
                 source_hash TEXT,
                 imported_at INTEGER NOT NULL,
@@ -34,7 +41,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 changed_after_review INTEGER NOT NULL DEFAULT 0
             )
         """.trimIndent())
-        db.execSQL("CREATE UNIQUE INDEX idx_tx_operation ON transactions(operation_no) WHERE operation_no IS NOT NULL AND operation_no <> ''")
+        db.execSQL("CREATE UNIQUE INDEX idx_tx_operation_currency ON transactions(currency, operation_no) WHERE operation_no IS NOT NULL AND operation_no <> ''")
         db.execSQL("CREATE INDEX idx_tx_pnr ON transactions(pnr)")
         db.execSQL("CREATE INDEX idx_tx_type ON transactions(type)")
         db.execSQL("CREATE INDEX idx_tx_review ON transactions(review_state)")
@@ -65,6 +72,10 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 tx_id TEXT NOT NULL,
                 passenger_id TEXT NOT NULL,
                 amount REAL,
+                passenger_type TEXT,
+                document_no TEXT,
+                product TEXT,
+                flags TEXT,
                 PRIMARY KEY(tx_id, passenger_id)
             )
         """.trimIndent())
@@ -114,7 +125,23 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         seedDefaults(db)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE transactions ADD COLUMN transaction_date TEXT")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN source_code TEXT")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN statement_seq INTEGER")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN batch_id TEXT")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN ledger_effect REAL")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN balance_after REAL")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN flags TEXT")
+            db.execSQL("ALTER TABLE tx_passengers ADD COLUMN passenger_type TEXT")
+            db.execSQL("ALTER TABLE tx_passengers ADD COLUMN document_no TEXT")
+            db.execSQL("ALTER TABLE tx_passengers ADD COLUMN product TEXT")
+            db.execSQL("ALTER TABLE tx_passengers ADD COLUMN flags TEXT")
+            db.execSQL("DROP INDEX IF EXISTS idx_tx_operation")
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_tx_operation_currency ON transactions(currency, operation_no) WHERE operation_no IS NOT NULL AND operation_no <> ''")
+        }
+    }
 
     private fun seedDefaults(db: SQLiteDatabase) {
         putSetting(db, "page_size", "20")
@@ -122,6 +149,9 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         putSetting(db, "iqd_tolerance", "1000")
         putSetting(db, "issuer_whatsapp", "")
         putSetting(db, "review_lock", "false")
+        putSetting(db, "bridge_reject_on_error", "true")
+        putSetting(db, "bridge_pdf_experimental", "false")
+        putSetting(db, "bridge_default_mode", "CUMULATIVE")
 
         val defaults = listOf(
             CommissionRule(UUID.randomUUID().toString(), "Iraqi Airways", RuleKind.PERCENT_BASE, 4.0, note = "قابل للتعديل"),
@@ -162,22 +192,33 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
 
     fun upsertParsed(parsed: ParsedTransaction, source: SourceType = SourceType.PDF): Pair<Transaction, Boolean> {
         val db = writableDatabase
-        val hash = sha256(parsed.rawText.trim())
-        val existing = parsed.operationNo?.let { findByOperation(it) }
+        val hash = semanticHash(parsed)
+        val existing = parsed.operationNo?.let { findByOperation(it, parsed.currency) }
         val tx = if (existing != null) {
-            val changed = existing.sourceHash != null && existing.sourceHash != hash
-            val mergedSource = if (existing.source == SourceType.MANUAL) SourceType.PDF_MANUAL else existing.source
+            val changed = hasMaterialChange(existing, parsed)
+            val mergedSource = when {
+                existing.source == SourceType.MANUAL && source == SourceType.BRIDGE -> SourceType.BRIDGE_MANUAL
+                existing.source == SourceType.MANUAL -> SourceType.PDF_MANUAL
+                else -> source
+            }
             val updated = existing.copy(
+                transactionDate = parsed.transactionDate ?: existing.transactionDate,
                 currency = parsed.currency,
                 type = if (existing.type == TxType.UNKNOWN) parsed.type else existing.type,
                 source = mergedSource,
+                sourceCode = parsed.sourceCode ?: existing.sourceCode,
+                statementSeq = parsed.statementSeq,
+                batchId = parsed.batchId ?: existing.batchId,
                 pnr = existing.pnr ?: parsed.pnr,
                 route = existing.route ?: parsed.route,
                 amount = parsed.amount,
+                ledgerEffect = parsed.ledgerEffect,
                 discount = parsed.discount,
+                balanceAfter = parsed.balanceAfter,
+                flags = parsed.flags,
                 rawText = parsed.rawText,
                 sourceHash = hash,
-                warning = if (changed) "تغيّرت بيانات عملية قديمة" else existing.warning,
+                warning = if (changed) "تغيّرت بيانات العملية الأساسية" else existing.warning,
                 changedAfterReview = existing.changedAfterReview || (changed && existing.reviewState == ReviewState.REVIEWED)
             )
             updateTransaction(db, updated)
@@ -200,9 +241,12 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             } else {
                 val created = Transaction(
                     id = UUID.randomUUID().toString(), operationNo = parsed.operationNo,
+                    transactionDate = parsed.transactionDate,
                     currency = parsed.currency, type = parsed.type, source = source,
+                    sourceCode = parsed.sourceCode, statementSeq = parsed.statementSeq, batchId = parsed.batchId,
                     pnr = parsed.pnr, route = parsed.route, amount = parsed.amount,
-                    discount = parsed.discount, rawText = parsed.rawText, sourceHash = hash,
+                    ledgerEffect = parsed.ledgerEffect, discount = parsed.discount, balanceAfter = parsed.balanceAfter,
+                    rawText = parsed.rawText, sourceHash = hash, flags = parsed.flags,
                     warning = if (parsed.type == TxType.UNKNOWN) "حالة مبهمة تحتاج مراجعة" else null
                 )
                 insertTransaction(db, created)
@@ -211,7 +255,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         }
         parsed.passengers.forEach { p ->
             val passenger = findOrCreatePassenger(p.name, p.passport)
-            linkPassenger(tx.id, passenger.id, p.amount)
+            linkPassenger(tx.id, passenger.id, p.amount, p.passengerType, p.documentNo, p.product, p.flags)
         }
         return tx to (existing == null)
     }
@@ -251,16 +295,18 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     private fun txValues(tx: Transaction) = ContentValues().apply {
-        put("id", tx.id); put("operation_no", tx.operationNo); put("currency", tx.currency.name)
-        put("type", tx.type.name); put("source", tx.source.name); put("pnr", tx.pnr); put("route", tx.route)
-        put("amount", tx.amount); put("discount", tx.discount); put("base_fare", tx.baseFare); put("reference_total", tx.referenceTotal); put("airline", tx.airline)
-        put("review_state", tx.reviewState.name); put("warning", tx.warning); put("note", tx.note); put("raw_text", tx.rawText)
+        put("id", tx.id); put("operation_no", tx.operationNo); put("transaction_date", tx.transactionDate); put("currency", tx.currency.name)
+        put("type", tx.type.name); put("source", tx.source.name); put("source_code", tx.sourceCode); put("statement_seq", tx.statementSeq); put("batch_id", tx.batchId)
+        put("pnr", tx.pnr); put("route", tx.route)
+        put("amount", tx.amount); put("ledger_effect", tx.ledgerEffect); put("discount", tx.discount); put("balance_after", tx.balanceAfter)
+        put("base_fare", tx.baseFare); put("reference_total", tx.referenceTotal); put("airline", tx.airline)
+        put("review_state", tx.reviewState.name); put("warning", tx.warning); put("note", tx.note); put("flags", tx.flags); put("raw_text", tx.rawText)
         put("source_hash", tx.sourceHash); put("imported_at", tx.importedAt); put("reviewed_at", tx.reviewedAt)
         put("changed_after_review", if (tx.changedAfterReview) 1 else 0)
     }
 
-    fun findByOperation(operationNo: String): Transaction? {
-        readableDatabase.rawQuery("SELECT * FROM transactions WHERE operation_no=? LIMIT 1", arrayOf(operationNo)).use {
+    fun findByOperation(operationNo: String, currency: Currency): Transaction? {
+        readableDatabase.rawQuery("SELECT * FROM transactions WHERE operation_no=? AND currency=? LIMIT 1", arrayOf(operationNo, currency.name)).use {
             return if (it.moveToFirst()) it.toTransaction() else null
         }
     }
@@ -351,9 +397,18 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         return p
     }
 
-    private fun linkPassenger(txId: String, passengerId: String, amount: Double?) {
+    private fun linkPassenger(
+        txId: String,
+        passengerId: String,
+        amount: Double?,
+        passengerType: String? = null,
+        documentNo: String? = null,
+        product: String? = null,
+        flags: String? = null
+    ) {
         writableDatabase.insertWithOnConflict("tx_passengers", null, ContentValues().apply {
             put("tx_id", txId); put("passenger_id", passengerId); put("amount", amount)
+            put("passenger_type", passengerType); put("document_no", documentNo); put("product", product); put("flags", flags)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
@@ -441,10 +496,12 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     private fun Cursor.toTransaction() = Transaction(
-        id = s("id"), operationNo = sn("operation_no"), currency = Currency.valueOf(s("currency")),
-        type = TxType.valueOf(s("type")), source = SourceType.valueOf(s("source")), pnr = sn("pnr"), route = sn("route"),
-        amount = d("amount"), discount = d("discount"), baseFare = dn("base_fare"), referenceTotal = dn("reference_total"), airline = sn("airline"),
-        reviewState = ReviewState.valueOf(s("review_state")), warning = sn("warning"), note = sn("note"), rawText = sn("raw_text"),
+        id = s("id"), operationNo = sn("operation_no"), transactionDate = sn("transaction_date"), currency = Currency.valueOf(s("currency")),
+        type = TxType.valueOf(s("type")), source = SourceType.valueOf(s("source")), sourceCode = sn("source_code"),
+        statementSeq = inn("statement_seq"), batchId = sn("batch_id"), pnr = sn("pnr"), route = sn("route"),
+        amount = d("amount"), ledgerEffect = dn("ledger_effect"), discount = d("discount"), balanceAfter = dn("balance_after"),
+        baseFare = dn("base_fare"), referenceTotal = dn("reference_total"), airline = sn("airline"),
+        reviewState = ReviewState.valueOf(s("review_state")), warning = sn("warning"), note = sn("note"), flags = sn("flags"), rawText = sn("raw_text"),
         sourceHash = sn("source_hash"), importedAt = l("imported_at"), reviewedAt = ln("reviewed_at"), changedAfterReview = i("changed_after_review") == 1
     )
 
@@ -453,8 +510,47 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     private fun Cursor.d(col: String) = getDouble(getColumnIndexOrThrow(col))
     private fun Cursor.dn(col: String): Double? = getColumnIndexOrThrow(col).let { if (isNull(it)) null else getDouble(it) }
     private fun Cursor.i(col: String) = getInt(getColumnIndexOrThrow(col))
+    private fun Cursor.inn(col: String): Int? = getColumnIndexOrThrow(col).let { if (isNull(it)) null else getInt(it) }
     private fun Cursor.l(col: String) = getLong(getColumnIndexOrThrow(col))
     private fun Cursor.ln(col: String): Long? = getColumnIndexOrThrow(col).let { if (isNull(it)) null else getLong(it) }
+
+    private fun hasMaterialChange(existing: Transaction, parsed: ParsedTransaction): Boolean {
+        fun norm(v: String?) = v.orEmpty().trim().uppercase()
+        if (existing.currency != parsed.currency) return true
+        if (existing.transactionDate != null && parsed.transactionDate != null && existing.transactionDate != parsed.transactionDate) return true
+        if (existing.type != TxType.UNKNOWN && parsed.type != TxType.UNKNOWN && existing.type != parsed.type) return true
+        if (kotlin.math.abs(existing.amount - parsed.amount) > 0.0001) return true
+        if (kotlin.math.abs(existing.discount - parsed.discount) > 0.0001) return true
+        if (norm(existing.pnr) != norm(parsed.pnr) && existing.pnr != null && parsed.pnr != null) return true
+        if (norm(existing.route) != norm(parsed.route) && existing.route != null && parsed.route != null) return true
+        if (parsed.passengers.isNotEmpty()) {
+            val existingNames = passengersFor(existing.id).map { normalize(it.name) }.sorted()
+            val parsedNames = parsed.passengers.map { normalize(it.name) }.sorted()
+            if (existingNames.isNotEmpty() && existingNames != parsedNames) return true
+        }
+        return false
+    }
+
+    private fun semanticHash(parsed: ParsedTransaction): String {
+        val pax = parsed.passengers
+            .map { listOf(normalize(it.name), it.passengerType.orEmpty(), it.documentNo.orEmpty(), it.amount?.toString().orEmpty(), it.passport.orEmpty()).joinToString("~") }
+            .sorted()
+            .joinToString(";")
+        val core = listOf(
+            parsed.currency.name,
+            parsed.operationNo.orEmpty(),
+            parsed.transactionDate.orEmpty(),
+            parsed.sourceCode.orEmpty(),
+            parsed.type.name,
+            parsed.pnr.orEmpty().uppercase(),
+            parsed.route.orEmpty().uppercase(),
+            parsed.amount.toString(),
+            parsed.discount.toString(),
+            pax,
+            parsed.flags.orEmpty()
+        ).joinToString("|")
+        return sha256(core)
+    }
 
     companion object {
         fun normalize(value: String): String = value.lowercase()
