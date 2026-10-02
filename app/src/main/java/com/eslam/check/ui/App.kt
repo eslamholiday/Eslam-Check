@@ -2015,6 +2015,7 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
     var responsiblePicker by remember { mutableStateOf(false) }
     var selectedPassenger by remember { mutableStateOf<Passenger?>(null) }
     var rawOpen by remember { mutableStateOf(false) }
+    var historyOpen by remember { mutableStateOf(false) }
 
     val rule = vm.ruleForTransaction(edit)
     val tolerance = if (edit.currency == Currency.USD) {
@@ -2328,6 +2329,34 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
                     }
 
                     edit.warning?.let { item { Text(it, color = Warn) } }
+
+                    item {
+                        TextButton(onClick = { historyOpen = !historyOpen }) {
+                            Icon(if (historyOpen) Icons.Rounded.ExpandLess else Icons.Rounded.History, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("السجل والتغييرات")
+                        }
+                        if (historyOpen) {
+                            val events = vm.auditEvents("transaction", edit.id)
+                            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp)) {
+                                Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    if (events.isEmpty()) {
+                                        Text("لا يوجد سجل بعد", fontSize = 12.sp)
+                                    } else {
+                                        events.take(20).forEach { event ->
+                                            Text(
+                                                auditActionLabel(event.action) + (event.details?.takeIf { it.isNotBlank() }?.let { " • " + it } ?: ""),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(formatAuditTime(event.createdAt), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            HorizontalDivider()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     edit.rawText?.let { raw ->
                         item {
@@ -2725,6 +2754,23 @@ private fun operationTypeColor(vm: MainViewModel, type: TxType): Color {
     val hex = remember(revision, key) { vm.setting(key, defaultTypeColor(key)) }
     return colorFromHex(hex) ?: MaterialTheme.colorScheme.primary
 }
+
+private fun auditActionLabel(action: String): String = when (action) {
+    "source_snapshot" -> "استيراد/تحديث من المصدر"
+    "review" -> "تغيير حالة المراجعة"
+    "edit" -> "تعديل يدوي"
+    "airline" -> "تحديد شركة الطيران"
+    "base_fare" -> "تعديل Base Fare"
+    "assign_responsible_group" -> "تعيين مسؤول للمجموعة"
+    else -> action.replace("_", " ")
+}
+
+private fun formatAuditTime(value: Long): String =
+    try {
+        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(value))
+    } catch (_: Exception) {
+        value.toString()
+    }
 
 private fun labelFor(type: TxType): String = when (type) {
     TxType.TICKET -> "تذكرة"
