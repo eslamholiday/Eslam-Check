@@ -256,7 +256,7 @@ private fun BridgeImportDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column {
                         Text("Eslam Bridge", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                        Text("ECX v2 • هوية ثابتة للكشف والعملية", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("ECX v3 / K1 • نص مختصر + Checksum + هوية ثابتة", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, "إغلاق") }
                 }
@@ -269,7 +269,7 @@ private fun BridgeImportDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     },
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     label = { Text("الصق النص هنا") },
-                    placeholder = { Text("ECX|2\nB|SNAPSHOT|BESTCHOICE|CUMULATIVE|DOC_ID\nL|LEDGER_ID|USD|...\nT|OP_ID|USD|...") }
+                    placeholder = { Text("X3|K1|TY|DOC_ID|SNAPSHOT_ID|C\nL|I|...\nO|I|57336|2026-09-21|T|...\nQ|I|57336|NAME|A|TICKET|...\nH|...|CHECKSUM") }
                 )
 
                 preview?.let { p ->
@@ -285,6 +285,8 @@ private fun BridgeImportDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                             )
                             Text("Snapshot: " + p.snapshotId.ifBlank { p.batchId.ifBlank { "بدون معرف" } })
                             Text("Document: " + p.documentId.ifBlank { "ECX v1 / غير محدد" }, fontSize = 12.sp)
+                            Text("الإصدار: ECX v" + p.version + (if (p.dictionaryVersion.isNotBlank()) " / " + p.dictionaryVersion else ""), fontSize = 12.sp)
+                            p.checksumVerified?.let { ok -> Text(if (ok) "Checksum ✓ سليم" else "Checksum ✗ غير مطابق", color = if (ok) Good else Bad, fontSize = 12.sp) }
                             Text("USD: " + p.usdCount + " • IQD: " + p.iqdCount + " • العمليات: " + p.transactions.size)
                             Text("PNR: " + p.pnrCount + " • المسافرون: " + p.passengerCount + " • خطوط مبهمة: " + p.ambiguousAirlines, fontSize = 12.sp)
                             Text(
@@ -1099,7 +1101,7 @@ private fun BridgeSettings(vm: MainViewModel, onBack: () -> Unit) {
     ) {
         item { SettingsHeader("Eslam Bridge", onBack) }
         item {
-            SettingsInfoCard("لغة الاستيراد", "ECX v2 • هوية ثابتة للملف والكشف والعملية • يدعم ECX v1 القديم")
+            SettingsInfoCard("لغة الاستيراد", "ECX v3 / K1 مختصر مع Checksum وهوية ثابتة • يدعم ECX v1 وv2 القديمين")
         }
         item {
             SettingSwitchRow(
@@ -1122,7 +1124,7 @@ private fun BridgeSettings(vm: MainViewModel, onBack: () -> Unit) {
         item {
             SettingsInfoCard(
                 "المطابقة",
-                "ECX v2 يستخدم OP_ID ثابتًا. عند غيابه نرجع إلى رقم العملية + العملة. تغيّر Balance أو ترتيب الصفوف وحده لا يعتبر تغييرًا."
+                "ECX v3 يشتق OP_ID ثابتًا من الحساب + العملة + رقم العملية. عند استيراد v1/v2 تبقى المطابقة القديمة مدعومة. Balance وترتيب الصفوف لا يغيّران هوية العملية."
             )
         }
         item {
