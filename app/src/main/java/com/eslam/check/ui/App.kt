@@ -7,6 +7,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -227,7 +229,7 @@ private fun BridgeImportDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column {
                         Text("Eslam Bridge", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                        Text("ECX v1", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("ECX v2 • هوية ثابتة للكشف والعملية", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, "إغلاق") }
                 }
@@ -240,7 +242,7 @@ private fun BridgeImportDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     },
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     label = { Text("الصق النص هنا") },
-                    placeholder = { Text("ECX|1\nB|...\nL|USD|...\nT|USD|...") }
+                    placeholder = { Text("ECX|2\nB|SNAPSHOT|BESTCHOICE|CUMULATIVE|DOC_ID\nL|LEDGER_ID|USD|...\nT|OP_ID|USD|...") }
                 )
 
                 preview?.let { p ->
@@ -254,8 +256,19 @@ private fun BridgeImportDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                                 if (p.canImport) "النص صالح للاستيراد ✓" else "يوجد خطأ في النص",
                                 fontWeight = FontWeight.Bold
                             )
-                            Text("Batch: " + p.batchId.ifBlank { "بدون معرف" })
-                            Text("USD: " + p.usdCount + " • IQD: " + p.iqdCount + " • الإجمالي: " + p.transactions.size)
+                            Text("Snapshot: " + p.snapshotId.ifBlank { p.batchId.ifBlank { "بدون معرف" } })
+                            Text("Document: " + p.documentId.ifBlank { "ECX v1 / غير محدد" }, fontSize = 12.sp)
+                            Text("USD: " + p.usdCount + " • IQD: " + p.iqdCount + " • العمليات: " + p.transactions.size)
+                            Text("PNR: " + p.pnrCount + " • المسافرون: " + p.passengerCount + " • خطوط مبهمة: " + p.ambiguousAirlines, fontSize = 12.sp)
+                            Text(
+                                "تذاكر " + p.transactions.count { it.type == TxType.TICKET } +
+                                    " • فيز " + p.transactions.count { it.type == TxType.VISA } +
+                                    " • تغيير " + p.transactions.count { it.type == TxType.CHANGE } +
+                                    " • استرجاع " + p.transactions.count { it.type == TxType.REFUND } +
+                                    " • تسديد " + p.transactions.count { it.type == TxType.PAYMENT } +
+                                    " • Void " + p.transactions.count { it.type == TxType.VOID },
+                                fontSize = 12.sp
+                            )
                             p.ledgers.forEach { ledger ->
                                 Text(
                                     ledger.currency.name + "  " + ledger.rangeFrom + " → " + ledger.rangeTo +
