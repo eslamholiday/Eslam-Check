@@ -662,7 +662,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         return out.values.toList()
     }
 
-    fun passengerSuggestions(query: String, limit: Int = 8): List<Passenger> {
+    fun passengerSuggestions(query: String, limit: Int = 100): List<Passenger> {
         if (query.isBlank()) return emptyList()
         val nameQuery = "%" + normalize(query) + "%"
         val rawQuery = "%" + query.trim() + "%"
