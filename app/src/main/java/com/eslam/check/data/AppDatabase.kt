@@ -410,9 +410,10 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         val where = mutableListOf<String>()
         val args = mutableListOf<String>()
         if (search.isNotBlank()) {
-            where += "(pnr LIKE ? OR operation_no LIKE ? OR note LIKE ? OR id IN (SELECT tp.tx_id FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id WHERE p.normalized_name LIKE ?))"
+            where += "(pnr LIKE ? OR operation_no LIKE ? OR airline LIKE ? OR visa_country LIKE ? OR note LIKE ? OR id IN (SELECT tp.tx_id FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id WHERE p.normalized_name LIKE ? OR p.passport LIKE ? OR tp.document_no LIKE ?))"
             val q = "%${normalize(search)}%"
-            args += listOf("%${search.trim()}%", "%${search.trim()}%", "%${search.trim()}%", q)
+            val raw = "%${search.trim()}%"
+            args += listOf(raw, raw, raw, raw, raw, q, raw, raw)
         }
         if (types.isNotEmpty()) {
             where += "type IN (${types.joinToString(",") { "?" }})"
@@ -438,7 +439,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         readableDatabase.rawQuery("""
             SELECT p.* FROM passengers p JOIN tx_passengers tp ON tp.passenger_id=p.id WHERE tp.tx_id=? ORDER BY p.name
         """.trimIndent(), arrayOf(txId)).use { c ->
-            while (c.moveToNext()) out += Passenger(c.s("id"), c.s("name"), c.sn("passport"), c.sn("responsible_id"))
+            while (c.moveToNext()) out += c.toPassenger()
         }
         return out
     }
@@ -449,14 +450,14 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         readableDatabase.rawQuery(
             "SELECT * FROM passengers WHERE normalized_name LIKE ? OR passport LIKE ? ORDER BY name LIMIT ?",
             arrayOf("%${normalize(query)}%", "%${query.trim()}%", limit.toString())
-        ).use { c -> while (c.moveToNext()) out += Passenger(c.s("id"), c.s("name"), c.sn("passport"), c.sn("responsible_id")) }
+        ).use { c -> while (c.moveToNext()) out += c.toPassenger() }
         return out
     }
 
     fun allPassengers(limit: Int = 200): List<Passenger> {
         val out = mutableListOf<Passenger>()
         readableDatabase.rawQuery("SELECT * FROM passengers ORDER BY name LIMIT ?", arrayOf(limit.toString())).use { c ->
-            while (c.moveToNext()) out += Passenger(c.s("id"), c.s("name"), c.sn("passport"), c.sn("responsible_id"))
+            while (c.moveToNext()) out += c.toPassenger()
         }
         return out
     }
@@ -474,11 +475,12 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             args = arrayOf(norm, passport)
         }
         readableDatabase.rawQuery(sql, args).use { c ->
-            if (c.moveToFirst()) return Passenger(c.s("id"), c.s("name"), c.sn("passport"), c.sn("responsible_id"))
+            if (c.moveToFirst()) return c.toPassenger()
         }
         val p = Passenger(UUID.randomUUID().toString(), clean, passport)
         writableDatabase.insert("passengers", null, ContentValues().apply {
-            put("id", p.id); put("name", p.name); put("normalized_name", norm); put("passport", passport); putNull("responsible_id")
+            put("id", p.id); put("name", p.name); put("normalized_name", norm); put("passport", passport)
+            putNull("phone"); putNull("responsible_id"); putNull("responsible_relation"); put("is_responsible", 0)
         })
         return p
     }
@@ -492,8 +494,12 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         product: String? = null,
         flags: String? = null
     ) {
+        val existingBase = readableDatabase.rawQuery(
+            "SELECT base_fare FROM tx_passengers WHERE tx_id=? AND passenger_id=?",
+            arrayOf(txId, passengerId)
+        ).use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getDouble(0) else null }
         writableDatabase.insertWithOnConflict("tx_passengers", null, ContentValues().apply {
-            put("tx_id", txId); put("passenger_id", passengerId); put("amount", amount)
+            put("tx_id", txId); put("passenger_id", passengerId); put("amount", amount); put("base_fare", existingBase)
             put("passenger_type", passengerType); put("document_no", documentNo); put("product", product); put("flags", flags)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -527,7 +533,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             total = count(),
             newCount = count("imported_at > ${System.currentTimeMillis() - 7L*24*60*60*1000}"),
             unreviewed = count("review_state='UNREVIEWED'"),
-            ambiguous = count("type='UNKNOWN'"),
+            ambiguous = count("type='UNKNOWN' OR (type='TICKET' AND currency='USD' AND (airline IS NULL OR airline=''))"),
             changed = count("changed_after_review=1"),
             payments = count("type='PAYMENT'")
         )
@@ -594,6 +600,138 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         reviewState = ReviewState.valueOf(s("review_state")), warning = sn("warning"), note = sn("note"), flags = sn("flags"), rawText = sn("raw_text"),
         sourceHash = sn("source_hash"), importedAt = l("imported_at"), reviewedAt = ln("reviewed_at"), changedAfterReview = i("changed_after_review") == 1
     )
+
+    private fun Cursor.toPassenger() = Passenger(
+        id = s("id"), name = s("name"), passport = sn("passport"), phone = sn("phone"),
+        responsibleId = sn("responsible_id"), responsibleRelation = sn("responsible_relation"),
+        isResponsible = i("is_responsible") == 1
+    )
+
+    fun txPassengerDetails(txId: String): List<TxPassengerDetail> {
+        val out = mutableListOf<TxPassengerDetail>()
+        readableDatabase.rawQuery("""
+            SELECT p.*, tp.amount AS tp_amount, tp.base_fare AS tp_base_fare, tp.passenger_type AS tp_type,
+                   tp.document_no AS tp_document, tp.product AS tp_product, tp.flags AS tp_flags
+            FROM passengers p JOIN tx_passengers tp ON tp.passenger_id=p.id
+            WHERE tp.tx_id=? ORDER BY p.name
+        """.trimIndent(), arrayOf(txId)).use { c ->
+            while (c.moveToNext()) {
+                out += TxPassengerDetail(
+                    passenger = c.toPassenger(),
+                    amount = c.dn("tp_amount"),
+                    baseFare = c.dn("tp_base_fare"),
+                    passengerType = c.sn("tp_type"),
+                    documentNo = c.sn("tp_document"),
+                    product = c.sn("tp_product"),
+                    flags = c.sn("tp_flags")
+                )
+            }
+        }
+        return out
+    }
+
+    fun setPassengerBaseFare(txId: String, passengerId: String, baseFare: Double?) {
+        writableDatabase.update("tx_passengers", ContentValues().apply {
+            if (baseFare == null) putNull("base_fare") else put("base_fare", baseFare)
+        }, "tx_id=? AND passenger_id=?", arrayOf(txId, passengerId))
+        audit("tx_passenger", "$txId/$passengerId", "base_fare", baseFare?.toString())
+    }
+
+    fun updatePassenger(person: Passenger) {
+        writableDatabase.update("passengers", ContentValues().apply {
+            put("name", person.name.trim()); put("normalized_name", normalize(person.name)); put("passport", person.passport)
+            put("phone", person.phone); put("responsible_id", person.responsibleId); put("responsible_relation", person.responsibleRelation)
+            put("is_responsible", if (person.isResponsible) 1 else 0)
+        }, "id=?", arrayOf(person.id))
+        audit("passenger", person.id, "edit", person.name)
+    }
+
+    fun assignResponsible(passengerId: String, responsibleId: String?, relation: String? = null) {
+        writableDatabase.update("passengers", ContentValues().apply {
+            put("responsible_id", responsibleId); put("responsible_relation", relation)
+        }, "id=?", arrayOf(passengerId))
+        if (responsibleId != null) {
+            writableDatabase.update("passengers", ContentValues().apply { put("is_responsible", 1) }, "id=?", arrayOf(responsibleId))
+        }
+        audit("passenger", passengerId, "assign_responsible", responsibleId)
+    }
+
+    fun dependentsOf(responsibleId: String): List<Passenger> {
+        val out = mutableListOf<Passenger>()
+        readableDatabase.rawQuery("SELECT * FROM passengers WHERE responsible_id=? ORDER BY name", arrayOf(responsibleId)).use { c ->
+            while (c.moveToNext()) out += c.toPassenger()
+        }
+        return out
+    }
+
+    fun passengerById(id: String): Passenger? {
+        readableDatabase.rawQuery("SELECT * FROM passengers WHERE id=? LIMIT 1", arrayOf(id)).use { c ->
+            return if (c.moveToFirst()) c.toPassenger() else null
+        }
+    }
+
+    fun setAirlineForTransaction(txId: String, airline: String?, learnPrefix: Boolean = true) {
+        val clean = airline?.trim()?.takeIf { it.isNotBlank() }
+        writableDatabase.update("transactions", ContentValues().apply { put("airline", clean) }, "id=?", arrayOf(txId))
+        if (learnPrefix && clean != null) {
+            txPassengerDetails(txId).mapNotNull { ticketPrefix(it.documentNo) }.distinct().forEach { prefix ->
+                writableDatabase.insertWithOnConflict("airline_prefixes", null, ContentValues().apply {
+                    put("prefix", prefix); put("airline", clean); put("learned", 1); put("updated_at", System.currentTimeMillis())
+                }, SQLiteDatabase.CONFLICT_REPLACE)
+            }
+        }
+        audit("transaction", txId, "airline", clean)
+    }
+
+    fun customerPhoneForTransaction(txId: String): String? {
+        val pax = passengersFor(txId)
+        for (p in pax) {
+            val responsiblePhone = p.responsibleId?.let(::passengerById)?.phone
+            if (!responsiblePhone.isNullOrBlank()) return responsiblePhone
+        }
+        return pax.firstOrNull { !it.phone.isNullOrBlank() }?.phone
+    }
+
+    fun airlineNames(): List<String> = rules().map { it.airline }.distinct().sorted()
+
+    private fun normalizeBusiness(parsed: ParsedTransaction): ParsedTransaction {
+        var type = parsed.type
+        val note = parsed.note.orEmpty()
+        if (type == TxType.TICKET && note.contains("تغيير", true)) type = TxType.CHANGE
+        if (type == TxType.TICKET && parsed.amount == 0.0 && parsed.flags.orEmpty().contains("VOID", true)) type = TxType.VOID
+        if (type == TxType.VISA && parsed.amount == 0.0) type = TxType.VOID
+
+        val visa = parsed.visaCountry ?: parsed.passengers.asSequence().mapNotNull { visaCountryFromProduct(it.product) }.firstOrNull()
+        val airline = when {
+            !parsed.airline.isNullOrBlank() -> parsed.airline
+            type == TxType.TICKET && parsed.currency == Currency.IQD -> "Iraqi Airways"
+            type == TxType.TICKET -> parsed.passengers.asSequence()
+                .mapNotNull { ticketPrefix(it.documentNo) }
+                .mapNotNull(::airlineByPrefix)
+                .firstOrNull()
+            else -> null
+        }
+        return parsed.copy(type = type, airline = airline, visaCountry = visa)
+    }
+
+    private fun ticketPrefix(documentNo: String?): String? =
+        documentNo?.filter(Char::isDigit)?.takeIf { it.length >= 3 }?.take(3)
+
+    private fun airlineByPrefix(prefix: String): String? =
+        readableDatabase.rawQuery("SELECT airline FROM airline_prefixes WHERE prefix=? LIMIT 1", arrayOf(prefix)).use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+
+    private fun visaCountryFromProduct(product: String?): String? {
+        val p = product.orEmpty().uppercase()
+        return when {
+            "UAE" in p || "الامارات" in p || "الإمارات" in p -> "UAE"
+            "JORDAN" in p || "الاردن" in p || "الأردن" in p -> "JORDAN"
+            "EGYPT" in p || "مصر" in p -> "EGYPT"
+            "SAUDI" in p || "السعود" in p -> "SAUDI"
+            else -> null
+        }
+    }
 
     private fun Cursor.s(col: String) = getString(getColumnIndexOrThrow(col))
     private fun Cursor.sn(col: String): String? = getColumnIndexOrThrow(col).let { if (isNull(it)) null else getString(it) }
