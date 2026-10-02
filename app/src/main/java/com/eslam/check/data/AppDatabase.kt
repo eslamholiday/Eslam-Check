@@ -621,10 +621,11 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         val where = mutableListOf<String>()
         val args = mutableListOf<String>()
         if (search.isNotBlank()) {
-            where += "(pnr LIKE ? OR operation_no LIKE ? OR airline LIKE ? OR visa_country LIKE ? OR note LIKE ? OR id IN (SELECT tp.tx_id FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id WHERE p.normalized_name LIKE ? OR p.passport LIKE ? OR p.phone LIKE ? OR tp.document_no LIKE ?))"
+            where += "(pnr LIKE ? OR operation_no LIKE ? OR airline LIKE ? OR visa_country LIKE ? OR note LIKE ? OR id IN (SELECT tp.tx_id FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id WHERE p.normalized_name LIKE ? OR p.passport LIKE ? OR p.phone LIKE ? OR tp.document_no LIKE ? OR p.id IN (SELECT passenger_id FROM passenger_aliases WHERE normalized_value LIKE ? OR normalized_value LIKE ?)))"
             val q = "%${normalize(search)}%"
             val raw = "%${search.trim()}%"
-            args += listOf(raw, raw, raw, raw, raw, q, raw, raw, raw)
+            val aliasRaw = "%${normalizeAliasValue("PASSPORT", search)}%"
+            args += listOf(raw, raw, raw, raw, raw, q, raw, raw, raw, q, aliasRaw)
         }
         if (types.isNotEmpty()) {
             where += "type IN (${types.joinToString(",") { "?" }})"
@@ -1011,6 +1012,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 addAlias(writableDatabase, primary.id, "NAME", source.name, source.id)
                 addAlias(writableDatabase, primary.id, "PASSPORT", source.passport, source.id)
                 addAlias(writableDatabase, primary.id, "PHONE", source.phone, source.id)
+                addAlias(writableDatabase, source.id, "NAME", primary.name, primary.id)
 
                 readableDatabase.rawQuery(
                     "SELECT kind,value FROM passenger_aliases WHERE passenger_id=?",
@@ -1023,6 +1025,10 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 writableDatabase.update("passengers", ContentValues().apply {
                     if (currentPrimary.passport.isNullOrBlank() && !source.passport.isNullOrBlank()) put("passport", source.passport)
                     if (currentPrimary.phone.isNullOrBlank() && !source.phone.isNullOrBlank()) put("phone", source.phone)
+                    if (currentPrimary.responsibleId.isNullOrBlank() && !source.responsibleId.isNullOrBlank()) {
+                        put("responsible_id", resolveCanonicalPassengerId(source.responsibleId))
+                        put("responsible_relation", source.responsibleRelation)
+                    }
                     put("is_responsible", if (currentPrimary.isResponsible || source.isResponsible) 1 else 0)
                 }, "id=?", arrayOf(primary.id))
 
@@ -1429,6 +1435,19 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     private fun Cursor.l(col: String) = getLong(getColumnIndexOrThrow(col))
     private fun Cursor.ln(col: String): Long? = getColumnIndexOrThrow(col).let { if (isNull(it)) null else getLong(it) }
 
+    private fun sourcePassengerNamesFor(txId: String): List<String> {
+        val out = mutableListOf<String>()
+        readableDatabase.rawQuery("""
+            SELECT p.name FROM passengers p
+            JOIN tx_passengers tp ON tp.passenger_id=p.id
+            WHERE tp.tx_id=?
+            ORDER BY p.name
+        """.trimIndent(), arrayOf(txId)).use { c ->
+            while (c.moveToNext()) out += normalize(c.getString(0))
+        }
+        return out.sorted()
+    }
+
     private fun hasMaterialChange(existing: Transaction, parsed: ParsedTransaction): Boolean {
         fun norm(v: String?) = v.orEmpty().trim().uppercase()
         if (existing.currency != parsed.currency) return true
@@ -1439,7 +1458,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         if (norm(existing.pnr) != norm(parsed.pnr) && existing.pnr != null && parsed.pnr != null) return true
         if (norm(existing.route) != norm(parsed.route) && existing.route != null && parsed.route != null) return true
         if (parsed.passengers.isNotEmpty()) {
-            val existingNames = passengersFor(existing.id).map { normalize(it.name) }.sorted()
+            val existingNames = sourcePassengerNamesFor(existing.id)
             val parsedNames = parsed.passengers.map { normalize(it.name) }.sorted()
             if (existingNames.isNotEmpty() && existingNames != parsedNames) return true
         }
