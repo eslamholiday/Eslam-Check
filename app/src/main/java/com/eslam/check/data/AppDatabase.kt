@@ -148,6 +148,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         putSetting(db, "usd_tolerance", "1.0")
         putSetting(db, "iqd_tolerance", "1000")
         putSetting(db, "issuer_whatsapp", "")
+        putSetting(db, "issuer_contact_type", "GROUP")
+        putSetting(db, "issuer_group_url", "https://chat.whatsapp.com/CSubCIjAE5Y0qnzWOI5Z6K?s=cl&p=a&mlu=4&ilr=4")
         putSetting(db, "review_lock", "false")
         putSetting(db, "bridge_reject_on_error", "true")
         putSetting(db, "bridge_pdf_experimental", "false")
