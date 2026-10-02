@@ -106,7 +106,7 @@ object BridgeParser {
                     val balance = numberOrBlank(f[6])
                     val pnr = unescape(f[7]).trim().uppercase().ifBlank { null }
                     val route = unescape(f[8]).trim().replace(Regex("\\s+"), "-").uppercase().ifBlank { null }
-                    val airline = unescape(f[9]).trim().ifBlank { null }
+                    val airline = unescape(f[9]).trim().takeUnless { it.isBlank() || it == "?" }
                     val visa = unescape(f[10]).trim().uppercase().ifBlank { null }
                     val discount = numberOrBlank(f[11]) ?: 0.0
                     val effect = numberOrBlank(f[12])
