@@ -250,31 +250,43 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
 
     fun upsertParsed(parsed: ParsedTransaction, source: SourceType = SourceType.PDF): Pair<Transaction, Boolean> {
         val db = writableDatabase
-        val hash = semanticHash(parsed)
-        val existing = parsed.operationNo?.let { findByOperation(it, parsed.currency) }
+        val normalizedParsed = normalizeBusiness(parsed)
+        val hash = semanticHash(normalizedParsed)
+        val stableExternalId = normalizedParsed.externalId ?: normalizedParsed.operationNo?.let {
+            (normalizedParsed.ledgerId?.takeIf(String::isNotBlank) ?: "BC-" + normalizedParsed.currency.name) + "-" + it
+        }
+        val parsedWithId = normalizedParsed.copy(externalId = stableExternalId)
+        val existing = stableExternalId?.let(::findByExternalId)
+            ?: parsedWithId.operationNo?.let { findByOperation(it, parsedWithId.currency) }
         val tx = if (existing != null) {
-            val changed = hasMaterialChange(existing, parsed)
+            val changed = hasMaterialChange(existing, parsedWithId)
             val mergedSource = when {
                 existing.source == SourceType.MANUAL && source == SourceType.BRIDGE -> SourceType.BRIDGE_MANUAL
                 existing.source == SourceType.MANUAL -> SourceType.PDF_MANUAL
                 else -> source
             }
             val updated = existing.copy(
-                transactionDate = parsed.transactionDate ?: existing.transactionDate,
-                currency = parsed.currency,
-                type = if (existing.type == TxType.UNKNOWN) parsed.type else existing.type,
+                externalId = parsedWithId.externalId ?: existing.externalId,
+                ledgerId = parsedWithId.ledgerId ?: existing.ledgerId,
+                documentId = parsedWithId.documentId ?: existing.documentId,
+                snapshotId = parsedWithId.snapshotId ?: existing.snapshotId,
+                transactionDate = parsedWithId.transactionDate ?: existing.transactionDate,
+                currency = parsedWithId.currency,
+                type = if (existing.type == TxType.UNKNOWN || parsedWithId.type == TxType.VOID || parsedWithId.type == TxType.CHANGE) parsedWithId.type else existing.type,
                 source = mergedSource,
-                sourceCode = parsed.sourceCode ?: existing.sourceCode,
-                statementSeq = parsed.statementSeq,
-                batchId = parsed.batchId ?: existing.batchId,
-                pnr = existing.pnr ?: parsed.pnr,
-                route = existing.route ?: parsed.route,
-                amount = parsed.amount,
-                ledgerEffect = parsed.ledgerEffect,
-                discount = parsed.discount,
-                balanceAfter = parsed.balanceAfter,
-                flags = parsed.flags,
-                rawText = parsed.rawText,
+                sourceCode = parsedWithId.sourceCode ?: existing.sourceCode,
+                statementSeq = parsedWithId.statementSeq,
+                batchId = parsedWithId.batchId ?: existing.batchId,
+                pnr = existing.pnr ?: parsedWithId.pnr,
+                route = existing.route ?: parsedWithId.route,
+                amount = parsedWithId.amount,
+                ledgerEffect = parsedWithId.ledgerEffect,
+                discount = parsedWithId.discount,
+                balanceAfter = parsedWithId.balanceAfter,
+                airline = parsedWithId.airline ?: existing.airline,
+                visaCountry = parsedWithId.visaCountry ?: existing.visaCountry,
+                flags = parsedWithId.flags,
+                rawText = parsedWithId.rawText,
                 sourceHash = hash,
                 warning = if (changed) "تغيّرت بيانات العملية الأساسية" else existing.warning,
                 changedAfterReview = existing.changedAfterReview || (changed && existing.reviewState == ReviewState.REVIEWED)
@@ -282,36 +294,45 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             updateTransaction(db, updated)
             updated
         } else {
-            val manualCandidate = findManualCandidate(parsed)
+            val manualCandidate = findManualCandidate(parsedWithId)
             if (manualCandidate != null) {
                 val updated = manualCandidate.copy(
-                    operationNo = parsed.operationNo,
-                    currency = parsed.currency,
+                    externalId = parsedWithId.externalId,
+                    ledgerId = parsedWithId.ledgerId,
+                    documentId = parsedWithId.documentId,
+                    snapshotId = parsedWithId.snapshotId,
+                    operationNo = parsedWithId.operationNo,
+                    currency = parsedWithId.currency,
+                    type = parsedWithId.type,
                     source = SourceType.PDF_MANUAL,
-                    route = manualCandidate.route ?: parsed.route,
-                    amount = if (manualCandidate.amount == 0.0) parsed.amount else manualCandidate.amount,
-                    discount = if (manualCandidate.discount == 0.0) parsed.discount else manualCandidate.discount,
-                    rawText = parsed.rawText,
+                    route = manualCandidate.route ?: parsedWithId.route,
+                    amount = if (manualCandidate.amount == 0.0) parsedWithId.amount else manualCandidate.amount,
+                    discount = if (manualCandidate.discount == 0.0) parsedWithId.discount else manualCandidate.discount,
+                    airline = parsedWithId.airline ?: manualCandidate.airline,
+                    visaCountry = parsedWithId.visaCountry ?: manualCandidate.visaCountry,
+                    rawText = parsedWithId.rawText,
                     sourceHash = hash
                 )
                 updateTransaction(db, updated)
                 updated
             } else {
                 val created = Transaction(
-                    id = UUID.randomUUID().toString(), operationNo = parsed.operationNo,
-                    transactionDate = parsed.transactionDate,
-                    currency = parsed.currency, type = parsed.type, source = source,
-                    sourceCode = parsed.sourceCode, statementSeq = parsed.statementSeq, batchId = parsed.batchId,
-                    pnr = parsed.pnr, route = parsed.route, amount = parsed.amount,
-                    ledgerEffect = parsed.ledgerEffect, discount = parsed.discount, balanceAfter = parsed.balanceAfter,
-                    rawText = parsed.rawText, sourceHash = hash, flags = parsed.flags,
-                    warning = if (parsed.type == TxType.UNKNOWN) "حالة مبهمة تحتاج مراجعة" else null
+                    id = UUID.randomUUID().toString(), externalId = parsedWithId.externalId,
+                    ledgerId = parsedWithId.ledgerId, documentId = parsedWithId.documentId, snapshotId = parsedWithId.snapshotId,
+                    operationNo = parsedWithId.operationNo, transactionDate = parsedWithId.transactionDate,
+                    currency = parsedWithId.currency, type = parsedWithId.type, source = source,
+                    sourceCode = parsedWithId.sourceCode, statementSeq = parsedWithId.statementSeq, batchId = parsedWithId.batchId,
+                    pnr = parsedWithId.pnr, route = parsedWithId.route, amount = parsedWithId.amount,
+                    ledgerEffect = parsedWithId.ledgerEffect, discount = parsedWithId.discount, balanceAfter = parsedWithId.balanceAfter,
+                    airline = parsedWithId.airline, visaCountry = parsedWithId.visaCountry,
+                    rawText = parsedWithId.rawText, sourceHash = hash, flags = parsedWithId.flags,
+                    warning = if (parsedWithId.type == TxType.UNKNOWN) "حالة مبهمة تحتاج مراجعة" else null
                 )
                 insertTransaction(db, created)
                 created
             }
         }
-        parsed.passengers.forEach { p ->
+        parsedWithId.passengers.forEach { p ->
             val passenger = findOrCreatePassenger(p.name, p.passport)
             linkPassenger(tx.id, passenger.id, p.amount, p.passengerType, p.documentNo, p.product, p.flags)
         }
@@ -353,14 +374,21 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     private fun txValues(tx: Transaction) = ContentValues().apply {
-        put("id", tx.id); put("operation_no", tx.operationNo); put("transaction_date", tx.transactionDate); put("currency", tx.currency.name)
+        put("id", tx.id); put("external_id", tx.externalId); put("ledger_id", tx.ledgerId); put("document_id", tx.documentId); put("snapshot_id", tx.snapshotId)
+        put("operation_no", tx.operationNo); put("transaction_date", tx.transactionDate); put("currency", tx.currency.name)
         put("type", tx.type.name); put("source", tx.source.name); put("source_code", tx.sourceCode); put("statement_seq", tx.statementSeq); put("batch_id", tx.batchId)
         put("pnr", tx.pnr); put("route", tx.route)
         put("amount", tx.amount); put("ledger_effect", tx.ledgerEffect); put("discount", tx.discount); put("balance_after", tx.balanceAfter)
-        put("base_fare", tx.baseFare); put("reference_total", tx.referenceTotal); put("airline", tx.airline)
+        put("base_fare", tx.baseFare); put("reference_total", tx.referenceTotal); put("airline", tx.airline); put("visa_country", tx.visaCountry)
         put("review_state", tx.reviewState.name); put("warning", tx.warning); put("note", tx.note); put("flags", tx.flags); put("raw_text", tx.rawText)
         put("source_hash", tx.sourceHash); put("imported_at", tx.importedAt); put("reviewed_at", tx.reviewedAt)
         put("changed_after_review", if (tx.changedAfterReview) 1 else 0)
+    }
+
+    fun findByExternalId(externalId: String): Transaction? {
+        readableDatabase.rawQuery("SELECT * FROM transactions WHERE external_id=? LIMIT 1", arrayOf(externalId)).use {
+            return if (it.moveToFirst()) it.toTransaction() else null
+        }
     }
 
     fun findByOperation(operationNo: String, currency: Currency): Transaction? {
@@ -557,11 +585,12 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     private fun Cursor.toTransaction() = Transaction(
-        id = s("id"), operationNo = sn("operation_no"), transactionDate = sn("transaction_date"), currency = Currency.valueOf(s("currency")),
+        id = s("id"), externalId = sn("external_id"), ledgerId = sn("ledger_id"), documentId = sn("document_id"), snapshotId = sn("snapshot_id"),
+        operationNo = sn("operation_no"), transactionDate = sn("transaction_date"), currency = Currency.valueOf(s("currency")),
         type = TxType.valueOf(s("type")), source = SourceType.valueOf(s("source")), sourceCode = sn("source_code"),
         statementSeq = inn("statement_seq"), batchId = sn("batch_id"), pnr = sn("pnr"), route = sn("route"),
         amount = d("amount"), ledgerEffect = dn("ledger_effect"), discount = d("discount"), balanceAfter = dn("balance_after"),
-        baseFare = dn("base_fare"), referenceTotal = dn("reference_total"), airline = sn("airline"),
+        baseFare = dn("base_fare"), referenceTotal = dn("reference_total"), airline = sn("airline"), visaCountry = sn("visa_country"),
         reviewState = ReviewState.valueOf(s("review_state")), warning = sn("warning"), note = sn("note"), flags = sn("flags"), rawText = sn("raw_text"),
         sourceHash = sn("source_hash"), importedAt = l("imported_at"), reviewedAt = ln("reviewed_at"), changedAfterReview = i("changed_after_review") == 1
     )
