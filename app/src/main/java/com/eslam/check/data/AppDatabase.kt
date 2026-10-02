@@ -624,7 +624,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             where += "(pnr LIKE ? OR operation_no LIKE ? OR airline LIKE ? OR visa_country LIKE ? OR note LIKE ? OR id IN (SELECT tp.tx_id FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id WHERE p.normalized_name LIKE ? OR p.passport LIKE ? OR p.phone LIKE ? OR tp.document_no LIKE ? OR p.id IN (SELECT passenger_id FROM passenger_aliases WHERE normalized_value LIKE ? OR normalized_value LIKE ?)))"
             val q = "%${normalize(search)}%"
             val raw = "%${search.trim()}%"
-            val aliasRaw = "%${normalizeAliasValue("PASSPORT", search)}%"
+            val aliasToken = normalizeAliasValue("PASSPORT", search)
+            val aliasRaw = if (aliasToken.isBlank()) "__NO_ALIAS_MATCH__" else "%$aliasToken%"
             args += listOf(raw, raw, raw, raw, raw, q, raw, raw, raw, q, aliasRaw)
         }
         if (types.isNotEmpty()) {
@@ -668,7 +669,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         val nameQuery = "%" + normalize(query) + "%"
         val rawQuery = "%" + query.trim() + "%"
         val aliasName = "%" + normalizeAliasValue("NAME", query) + "%"
-        val aliasRaw = "%" + normalizeAliasValue("PASSPORT", query) + "%"
+        val aliasToken = normalizeAliasValue("PASSPORT", query)
+        val aliasRaw = if (aliasToken.isBlank()) "__NO_ALIAS_MATCH__" else "%" + aliasToken + "%"
         val ids = linkedSetOf<String>()
         val out = mutableListOf<Passenger>()
         readableDatabase.rawQuery("""
