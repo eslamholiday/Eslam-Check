@@ -201,13 +201,23 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         putSetting(db, "bridge_default_mode", "CUMULATIVE")
 
         val defaults = listOf(
-            CommissionRule(UUID.randomUUID().toString(), "Iraqi Airways", RuleKind.PERCENT_BASE, 4.0, note = "قابل للتعديل"),
-            CommissionRule(UUID.randomUUID().toString(), "Flydubai", RuleKind.FIXED_PER_PASSENGER, 5.0),
-            CommissionRule(UUID.randomUUID().toString(), "Air Arabia", RuleKind.FIXED_PER_PASSENGER, 5.0),
-            CommissionRule(UUID.randomUUID().toString(), "SalamAir", RuleKind.FIXED_PER_PASSENGER, 5.0),
-            CommissionRule(UUID.randomUUID().toString(), "Flynas", RuleKind.FIXED_PER_PASSENGER, 5.0)
+            CommissionRule(UUID.randomUUID().toString(), "Iraqi Airways", RuleKind.PRIVATE_MANUAL, 0.0, note = "النسبة على Base Fare وتتغير حسب القاعدة/الفترة؛ تذاكر كشف IQD تُصنف عراقية تلقائيًا"),
+            CommissionRule(UUID.randomUUID().toString(), "Air Arabia", RuleKind.FIXED_PER_PASSENGER, 5.0, note = "رسم إصدار +5 لكل مسافر"),
+            CommissionRule(UUID.randomUUID().toString(), "Flydubai", RuleKind.FIXED_PER_PASSENGER, 5.0, note = "رسم إصدار +5 لكل مسافر"),
+            CommissionRule(UUID.randomUUID().toString(), "Pegasus", RuleKind.FIXED_PER_PASSENGER, 15.0, roundTripValue = 35.0, note = "15$ اتجاه واحد / 35$ ذهاب وإياب لكل مسافر"),
+            CommissionRule(UUID.randomUUID().toString(), "Turkish Airlines", RuleKind.PRIVATE_MANUAL, 0.0),
+            CommissionRule(UUID.randomUUID().toString(), "Qatar Airways", RuleKind.PRIVATE_MANUAL, 0.0),
+            CommissionRule(UUID.randomUUID().toString(), "Emirates", RuleKind.PRIVATE_MANUAL, 0.0),
+            CommissionRule(UUID.randomUUID().toString(), "Royal Jordanian", RuleKind.PRIVATE_MANUAL, 0.0),
+            CommissionRule(UUID.randomUUID().toString(), "Fly Baghdad", RuleKind.PRIVATE_MANUAL, 0.0),
+            CommissionRule(UUID.randomUUID().toString(), "Middle East Airlines", RuleKind.PRIVATE_MANUAL, 0.0, note = "بيروت → بغداد قد تكون له قاعدة عكسية مختلفة"),
+            CommissionRule(UUID.randomUUID().toString(), "SalamAir", RuleKind.PRIVATE_MANUAL, 0.0),
+            CommissionRule(UUID.randomUUID().toString(), "Flynas", RuleKind.PRIVATE_MANUAL, 0.0)
         )
         defaults.forEach { insertRule(db, it) }
+        db.insertWithOnConflict("airline_prefixes", null, ContentValues().apply {
+            put("prefix", "073"); put("airline", "Iraqi Airways"); put("learned", 0); put("updated_at", System.currentTimeMillis())
+        }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
     private fun putSetting(db: SQLiteDatabase, key: String, value: String) {
@@ -219,7 +229,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     private fun insertRule(db: SQLiteDatabase, rule: CommissionRule) {
         db.insert("commission_rules", null, ContentValues().apply {
             put("id", rule.id); put("airline", rule.airline); put("kind", rule.kind.name)
-            put("value", rule.value); put("reverse_only", if (rule.reverseOnly) 1 else 0)
+            put("value", rule.value); put("round_trip_value", rule.roundTripValue)
+            put("reverse_only", if (rule.reverseOnly) 1 else 0); put("direction", rule.direction); put("effective_from", rule.effectiveFrom)
             put("learned", if (rule.learned) 1 else 0); put("active", if (rule.active) 1 else 0)
             put("note", rule.note); put("updated_at", rule.updatedAt)
         })
@@ -498,8 +509,10 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         val out = mutableListOf<CommissionRule>()
         readableDatabase.rawQuery("SELECT * FROM commission_rules WHERE active=1 ORDER BY airline", null).use { c ->
             while (c.moveToNext()) out += CommissionRule(
-                c.s("id"), c.s("airline"), RuleKind.valueOf(c.s("kind")), c.d("value"),
-                c.i("reverse_only") == 1, c.i("learned") == 1, c.i("active") == 1, c.sn("note"), c.l("updated_at")
+                id = c.s("id"), airline = c.s("airline"), kind = RuleKind.valueOf(c.s("kind")), value = c.d("value"),
+                roundTripValue = c.dn("round_trip_value"), reverseOnly = c.i("reverse_only") == 1,
+                direction = c.sn("direction") ?: "ANY", effectiveFrom = c.sn("effective_from"),
+                learned = c.i("learned") == 1, active = c.i("active") == 1, note = c.sn("note"), updatedAt = c.l("updated_at")
             )
         }
         return out
@@ -508,7 +521,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     fun saveRule(rule: CommissionRule) {
         writableDatabase.insertWithOnConflict("commission_rules", null, ContentValues().apply {
             put("id", rule.id); put("airline", rule.airline); put("kind", rule.kind.name); put("value", rule.value)
-            put("reverse_only", if (rule.reverseOnly) 1 else 0); put("learned", if (rule.learned) 1 else 0)
+            put("round_trip_value", rule.roundTripValue); put("reverse_only", if (rule.reverseOnly) 1 else 0)
+            put("direction", rule.direction); put("effective_from", rule.effectiveFrom); put("learned", if (rule.learned) 1 else 0)
             put("active", if (rule.active) 1 else 0); put("note", rule.note); put("updated_at", rule.updatedAt)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
