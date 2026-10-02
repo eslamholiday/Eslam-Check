@@ -1576,6 +1576,255 @@ private fun WhatsAppSettings(vm: MainViewModel, onBack: () -> Unit) {
 }
 
 @Composable
+private fun VisaSettings(vm: MainViewModel, onBack: () -> Unit) {
+    val context = LocalContext.current
+    var link by remember { mutableStateOf(vm.setting("visa_link", "https://docs.google.com/spreadsheets/d/1NwV7H_9AGEWunvE6rY5d-U4qi6lOkME23oawFA2jx_Q/edit?usp=drivesdk")) }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SettingsHeader("الفيز", onBack) }
+        item {
+            SettingsInfoCard(
+                "مراجعة الفيز",
+                "لا يظهر Discount في الفيز. يعرض النوع/الدولة والأسماء والأسعار فقط، والإلغاء يبقى واضحًا."
+            )
+        }
+        item {
+            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("رابط الفيز", fontWeight = FontWeight.Bold)
+                    OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("الرابط الافتراضي") }, minLines = 2)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { vm.setSetting("visa_link", link.trim()) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("حفظ") }
+                        OutlinedButton(
+                            enabled = link.startsWith("http"),
+                            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link.trim()))) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("فتح") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PaymentsSettings(vm: MainViewModel, onBack: () -> Unit) {
+    val context = LocalContext.current
+    var name by remember { mutableStateOf(vm.setting("accountant_name", "المحاسب")) }
+    var phone by remember { mutableStateOf(vm.setting("accountant_whatsapp", "")) }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SettingsHeader("التسديدات والمحاسب", onBack) }
+        item {
+            SettingsInfoCard(
+                "التسديدات",
+                "لا يظهر Discount. يمكن حفظ رابط/مرفق لكل عملية، وزر المحاسب يفتح واتساب الرقم المحفوظ."
+            )
+        }
+        item {
+            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("اسم المحاسب") })
+                    OutlinedTextField(
+                        phone, { phone = it }, Modifier.fillMaxWidth(),
+                        label = { Text("رقم واتساب المحاسب") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                vm.setSetting("accountant_name", name.ifBlank { "المحاسب" })
+                                vm.setSetting("accountant_whatsapp", phone)
+                            }
+                        ) { Text("حفظ") }
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            enabled = phone.filter(Char::isDigit).isNotBlank(),
+                            onClick = {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone.filter(Char::isDigit))))
+                            }
+                        ) { Text("اختبار WhatsApp") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppearanceSettings(vm: MainViewModel, onBack: () -> Unit) {
+    val revision by vm.settingsRevision.collectAsState()
+    var preset by remember(revision) { mutableStateOf(vm.setting("theme_preset", "NAVY")) }
+    var fontChoice by remember(revision) { mutableStateOf(vm.setting("font_choice", "SANS")) }
+    var fontScale by remember(revision) { mutableStateOf(vm.setting("font_scale", "1.0").toFloatOrNull() ?: 1f) }
+    var colorTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+
+    val typeRows = listOf(
+        "color_ticket" to "تذكرة",
+        "color_visa" to "فيزا",
+        "color_change" to "تغيير",
+        "color_refund" to "استرجاع",
+        "color_void" to "إلغاء / Void",
+        "color_payment" to "تسديد",
+        "color_unknown" to "مبهم"
+    )
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SettingsHeader("الشكل والواجهة", onBack) }
+        item {
+            Text("الثيمات", fontWeight = FontWeight.Bold)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(
+                    "NAVY" to "Eslam Navy",
+                    "MIDNIGHT" to "Midnight",
+                    "EMERALD" to "Emerald",
+                    "GRAPHITE" to "Graphite",
+                    "SAND" to "Light Sand"
+                ).forEach { (key, label) ->
+                    FilterChip(
+                        selected = preset == key,
+                        onClick = {
+                            preset = key
+                            vm.setSetting("theme_preset", key)
+                        },
+                        label = { Text(label) }
+                    )
+                }
+            }
+        }
+        item {
+            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("الخط", fontWeight = FontWeight.Bold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("SANS" to "Sans", "SERIF" to "Serif", "MONO" to "Mono").forEach { (key, label) ->
+                            FilterChip(
+                                selected = fontChoice == key,
+                                onClick = {
+                                    fontChoice = key
+                                    vm.setSetting("font_choice", key)
+                                },
+                                label = { Text(label) }
+                            )
+                        }
+                    }
+                    Text("حجم الخط: " + String.format("%.0f%%", fontScale * 100), fontSize = 12.sp)
+                    Slider(
+                        value = fontScale,
+                        onValueChange = {
+                            fontScale = it
+                            vm.setSetting("font_scale", it.toString())
+                        },
+                        valueRange = 0.85f..1.30f
+                    )
+                }
+            }
+        }
+        item { Text("ألوان أنواع العمليات", fontWeight = FontWeight.Bold, fontSize = 18.sp) }
+        items(typeRows) { row ->
+            val value = vm.setting(row.first, defaultTypeColor(row.first))
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable { colorTarget = row },
+                shape = RoundedCornerShape(14.dp),
+                tonalElevation = 1.dp
+            ) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.size(30.dp).background(colorFromHex(value) ?: MaterialTheme.colorScheme.primary, CircleShape)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(row.second, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                    Text(value, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Rounded.Palette, null)
+                }
+            }
+        }
+        item {
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    typeRows.forEach { vm.setSetting(it.first, defaultTypeColor(it.first)) }
+                }
+            ) { Text("استعادة ألوان العمليات الافتراضية") }
+        }
+    }
+
+    colorTarget?.let { target ->
+        ColorChoiceDialog(
+            title = "لون " + target.second,
+            current = vm.setting(target.first, defaultTypeColor(target.first)),
+            onDismiss = { colorTarget = null },
+            onSelect = {
+                vm.setSetting(target.first, it)
+                colorTarget = null
+            }
+        )
+    }
+}
+
+@Composable
+private fun ColorChoiceDialog(
+    title: String,
+    current: String,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit
+) {
+    val palette = listOf(
+        "#2F80ED", "#56CCF2", "#7B61FF", "#9B51E0", "#27AE60", "#6FCF97",
+        "#F2994A", "#F2C94C", "#EB5757", "#D4A84F", "#607D8B", "#90A4AE"
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                palette.chunked(4).forEach { row ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        row.forEach { hex ->
+                            Surface(
+                                modifier = Modifier.size(52.dp).clickable { onSelect(hex) },
+                                shape = CircleShape,
+                                color = colorFromHex(hex) ?: MaterialTheme.colorScheme.primary,
+                                border = if (hex.equals(current, true)) androidx.compose.foundation.BorderStroke(3.dp, MaterialTheme.colorScheme.onSurface) else null
+                            ) {}
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+    )
+}
+
+private fun defaultTypeColor(key: String): String = when (key) {
+    "color_ticket" -> "#2F80ED"
+    "color_visa" -> "#7B61FF"
+    "color_change" -> "#F2994A"
+    "color_refund" -> "#27AE60"
+    "color_void" -> "#EB5757"
+    "color_payment" -> "#56CCF2"
+    else -> "#6A4C93"
+}
+
+@Composable
 private fun InfoSettingsPage(title: String, items: List<String>, onBack: () -> Unit) {
     LazyColumn(
         Modifier.fillMaxSize(),
