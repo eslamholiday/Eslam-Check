@@ -65,7 +65,7 @@ object BridgeParser {
                     if (batchId.isBlank()) warnings += "السطر " + lineNo + ": BATCH بدون معرف"
                 }
                 "L" -> {
-                    if (f.size < 9) {
+                    if (f.size < 8) {
                         errors += "السطر " + lineNo + ": سجل L ناقص"
                         return@forEachIndexed
                     }
