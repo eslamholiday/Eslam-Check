@@ -646,28 +646,56 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun passengersFor(txId: String): List<Passenger> {
-        val out = mutableListOf<Passenger>()
+        val out = linkedMapOf<String, Passenger>()
         readableDatabase.rawQuery("""
-            SELECT p.* FROM passengers p JOIN tx_passengers tp ON tp.passenger_id=p.id WHERE tp.tx_id=? ORDER BY p.name
+            SELECT p.* FROM passengers p
+            JOIN tx_passengers tp ON tp.passenger_id=p.id
+            WHERE tp.tx_id=?
+            ORDER BY p.name
         """.trimIndent(), arrayOf(txId)).use { c ->
-            while (c.moveToNext()) out += c.toPassenger()
+            while (c.moveToNext()) {
+                val raw = c.toPassenger()
+                val canonical = passengerById(raw.id) ?: raw
+                out.putIfAbsent(canonical.id, canonical)
+            }
         }
-        return out
+        return out.values.toList()
     }
 
     fun passengerSuggestions(query: String, limit: Int = 8): List<Passenger> {
         if (query.isBlank()) return emptyList()
+        val nameQuery = "%" + normalize(query) + "%"
+        val rawQuery = "%" + query.trim() + "%"
+        val aliasName = "%" + normalizeAliasValue("NAME", query) + "%"
+        val aliasRaw = "%" + normalizeAliasValue("PASSPORT", query) + "%"
+        val ids = linkedSetOf<String>()
         val out = mutableListOf<Passenger>()
-        readableDatabase.rawQuery(
-            "SELECT * FROM passengers WHERE normalized_name LIKE ? OR passport LIKE ? OR phone LIKE ? ORDER BY name LIMIT ?",
-            arrayOf("%${normalize(query)}%", "%${query.trim()}%", "%${query.trim()}%", limit.toString())
-        ).use { c -> while (c.moveToNext()) out += c.toPassenger() }
+        readableDatabase.rawQuery("""
+            SELECT DISTINCT p.* FROM passengers p
+            LEFT JOIN passenger_aliases a ON a.passenger_id=p.id
+            WHERE p.merged_into_id IS NULL
+              AND (
+                p.normalized_name LIKE ? OR p.passport LIKE ? OR p.phone LIKE ?
+                OR (a.kind='NAME' AND a.normalized_value LIKE ?)
+                OR (a.kind IN ('PASSPORT','PHONE') AND a.normalized_value LIKE ?)
+              )
+            ORDER BY p.name
+            LIMIT ?
+        """.trimIndent(), arrayOf(nameQuery, rawQuery, rawQuery, aliasName, aliasRaw, limit.toString())).use { c ->
+            while (c.moveToNext()) {
+                val p = c.toPassenger()
+                if (ids.add(p.id)) out += p
+            }
+        }
         return out
     }
 
-    fun allPassengers(limit: Int = 200): List<Passenger> {
+    fun allPassengers(limit: Int = 500): List<Passenger> {
         val out = mutableListOf<Passenger>()
-        readableDatabase.rawQuery("SELECT * FROM passengers ORDER BY name LIMIT ?", arrayOf(limit.toString())).use { c ->
+        readableDatabase.rawQuery(
+            "SELECT * FROM passengers WHERE merged_into_id IS NULL ORDER BY name LIMIT ?",
+            arrayOf(limit.toString())
+        ).use { c ->
             while (c.moveToNext()) out += c.toPassenger()
         }
         return out
@@ -675,24 +703,52 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
 
     fun findOrCreatePassenger(name: String, passport: String?): Passenger {
         val clean = name.trim().replace(Regex("\\s+"), " ")
-        val norm = normalize(clean)
-        val sql: String
-        val args: Array<String>
-        if (passport.isNullOrBlank()) {
-            sql = "SELECT * FROM passengers WHERE normalized_name=? LIMIT 1"
-            args = arrayOf(norm)
-        } else {
-            sql = "SELECT * FROM passengers WHERE normalized_name=? OR passport=? LIMIT 1"
-            args = arrayOf(norm, passport)
+        val normName = normalizeAliasValue("NAME", clean)
+        val normPassport = passport?.takeIf { it.isNotBlank() }?.let { normalizeAliasValue("PASSPORT", it) }
+
+        fun aliasOwner(kind: String, normalized: String): String? =
+            readableDatabase.rawQuery(
+                "SELECT passenger_id FROM passenger_aliases WHERE kind=? AND normalized_value=? ORDER BY created_at DESC LIMIT 1",
+                arrayOf(kind, normalized)
+            ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+
+        val candidateId = normPassport?.let { aliasOwner("PASSPORT", it) }
+            ?: aliasOwner("NAME", normName)
+            ?: readableDatabase.rawQuery(
+                if (passport.isNullOrBlank())
+                    "SELECT id FROM passengers WHERE normalized_name=? ORDER BY CASE WHEN merged_into_id IS NULL THEN 0 ELSE 1 END LIMIT 1"
+                else
+                    "SELECT id FROM passengers WHERE passport=? OR normalized_name=? ORDER BY CASE WHEN passport=? THEN 0 ELSE 1 END, CASE WHEN merged_into_id IS NULL THEN 0 ELSE 1 END LIMIT 1",
+                if (passport.isNullOrBlank()) arrayOf(normName) else arrayOf(passport, normName, passport)
+            ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+
+        if (candidateId != null) {
+            val canonicalId = resolveCanonicalPassengerId(candidateId)
+            val existing = passengerRawById(canonicalId)
+            if (existing != null) {
+                addAlias(writableDatabase, canonicalId, "NAME", clean, candidateId)
+                if (!passport.isNullOrBlank()) addAlias(writableDatabase, canonicalId, "PASSPORT", passport, candidateId)
+                if (existing.passport.isNullOrBlank() && !passport.isNullOrBlank()) {
+                    writableDatabase.update("passengers", ContentValues().apply { put("passport", passport) }, "id=?", arrayOf(canonicalId))
+                }
+                return passengerRawById(canonicalId) ?: existing
+            }
         }
-        readableDatabase.rawQuery(sql, args).use { c ->
-            if (c.moveToFirst()) return c.toPassenger()
-        }
+
         val p = Passenger(UUID.randomUUID().toString(), clean, passport)
         writableDatabase.insert("passengers", null, ContentValues().apply {
-            put("id", p.id); put("name", p.name); put("normalized_name", norm); put("passport", passport)
-            putNull("phone"); putNull("responsible_id"); putNull("responsible_relation"); put("is_responsible", 0)
+            put("id", p.id)
+            put("name", p.name)
+            put("normalized_name", normalize(clean))
+            put("passport", passport)
+            putNull("phone")
+            putNull("responsible_id")
+            putNull("responsible_relation")
+            put("is_responsible", 0)
+            putNull("merged_into_id")
         })
+        addAlias(writableDatabase, p.id, "NAME", clean, p.id)
+        if (!passport.isNullOrBlank()) addAlias(writableDatabase, p.id, "PASSPORT", passport, p.id)
         return p
     }
 
