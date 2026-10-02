@@ -1054,12 +1054,18 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         writableDatabase.beginTransaction()
         try {
             writableDatabase.update("passengers", ContentValues().apply { putNull("merged_into_id") }, "id=?", arrayOf(sourceId))
+            val rootPrimaryId = resolveCanonicalPassengerId(primaryId)
             writableDatabase.delete(
                 "passenger_aliases",
                 "passenger_id=? AND source_passenger_id=?",
-                arrayOf(resolveCanonicalPassengerId(primaryId), sourceId)
+                arrayOf(rootPrimaryId, sourceId)
             )
-            audit("passenger", primaryId, "unmerge_passenger", sourceId + "|" + source.name)
+            writableDatabase.delete(
+                "passenger_aliases",
+                "passenger_id=? AND source_passenger_id=?",
+                arrayOf(sourceId, rootPrimaryId)
+            )
+            audit("passenger", rootPrimaryId, "unmerge_passenger", sourceId + "|" + source.name)
             audit("passenger", sourceId, "unmerged_from", primaryId)
             writableDatabase.setTransactionSuccessful()
         } finally {
