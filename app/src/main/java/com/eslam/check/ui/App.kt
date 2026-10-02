@@ -1000,33 +1000,16 @@ private fun MoreScreen(vm: MainViewModel) {
         "review" -> ReviewSettings(vm) { page = "root" }
         "commissions" -> CommissionSettings(vm) { page = "root" }
         "whatsapp" -> WhatsAppSettings(vm) { page = "root" }
+        "visas" -> VisaSettings(vm) { page = "root" }
+        "payments" -> PaymentsSettings(vm) { page = "root" }
+        "appearance" -> AppearanceSettings(vm) { page = "root" }
         "people" -> InfoSettingsPage(
-            title = "المسافرون والعملاء",
+            title = "المسافرون والمسؤولون",
             items = listOf(
-                "جميع المسافرين / المسؤولون / التابعون / المستقلون",
-                "المسؤول يبقى مسافرًا بنفس ID ولا ينشأ سجل مكرر",
-                "يمكن ربط عدة مسافرين بمسؤول واحد وتغيير المسؤول أو فك الربط",
-                "رقم واتساب المسؤول يستخدم كزر الزبون عند توفره"
-            ),
-            onBack = { page = "root" }
-        )
-        "payments" -> InfoSettingsPage(
-            title = "التسديدات",
-            items = listOf(
-                "مطابقة التسديدات تبقى تقريبية",
-                "التأكيد النهائي يدوي",
-                "يمكن ربط أكثر من إيصال بتسديد واحد",
-                "التسديدات تظهر بقسم مستقل"
-            ),
-            onBack = { page = "root" }
-        )
-        "appearance" -> InfoSettingsPage(
-            title = "الشكل والواجهة",
-            items = listOf(
-                "الوضع الداكن والفاتح يتبع النظام",
-                "ألوان الحالات: صحيح / تحذير / مبهم",
-                "الواجهة الأساسية تبقى خفيفة",
-                "الإعدادات المتقدمة لا تظهر في الصفحة الرئيسية"
+                "المسؤول يبقى مسافرًا بنفس ID",
+                "اختيار مسؤول من داخل PNR يضم بقية المسافرين تحته",
+                "ملفات الجواز ترفع كصور أو PDF بدل حقل جواز ظاهر",
+                "الأسماء ملفات قابلة للفتح وتعرض العمليات الشخصية وعمليات التابعين"
             ),
             onBack = { page = "root" }
         )
@@ -1034,21 +1017,21 @@ private fun MoreScreen(vm: MainViewModel) {
             title = "البيانات والنسخ",
             items = listOf(
                 "البيانات محلية على الهاتف",
-                "ECX هو مصدر الاستيراد الأساسي",
-                "العمليات القديمة لا يعاد إدخالها",
-                "رقم العملية + العملة هما مفتاح المطابقة"
+                "نفس العملية تحتفظ بنفس OP_ID عبر الكشوفات التراكمية",
+                "بيانات المصدر منفصلة عن التعديلات اليدوية",
+                "عمليات المراجعة تحفظ Snapshot لقاعدة العمولة المستخدمة"
             ),
             onBack = { page = "root" }
         )
         "advanced" -> InfoSettingsPage(
             title = "متقدم",
             items = listOf(
-                "ECX v2 هو بروتوكول Eslam Bridge الحالي مع دعم ECX v1 القديم",
-                "لكل كشف DOC_ID/SNAPSHOT_ID ولكل عملية OP_ID ثابت عبر الكشوفات التراكمية",
-                "Balance و Sequence معلومات Snapshot وليسا هوية للعملية",
-                "Change وNew Change يترجمان إلى Change فقط؛ Refund وNew Refund إلى Refund فقط",
-                "Sale Ticket صفر وفق القاعدة المتفق عليها يترجم Void، وVisa صفر تترجم ملغاة",
-                "تذاكر كشف IQD تصنف Iraqi Airways تلقائيًا؛ خط USD غير المعروف يبقى مبهمًا داخل التذكرة"
+                "ECX v3 / K1 هو تنسيق النسخ المختصر الحالي مع دعم v1 وv2",
+                "X3 يختصر الحساب والعملة والنوع والخطوط، والتطبيق يعرض الأسماء الكاملة",
+                "Checksum يمنع استيراد نص ناقص أو متغير أثناء النسخ",
+                "Change وNew Change = تغيير، Refund وNew Refund = استرجاع",
+                "تذاكر IQD = Iraqi Airways تلقائيًا، وخط USD غير المعروف يبقى مبهمًا",
+                "Visa وChange وRefund وPayment لا تحتاج Discount في الترجمة المختصرة"
             ),
             onBack = { page = "root" }
         )
@@ -1061,9 +1044,10 @@ private fun SettingsRoot(onOpen: (String) -> Unit) {
         Triple("bridge", "Eslam Bridge", Icons.Rounded.Hub),
         Triple("review", "المراجعة والكشوفات", Icons.Rounded.FactCheck),
         Triple("commissions", "التذاكر والعمولات", Icons.Rounded.Percent),
-        Triple("people", "المسافرون والعملاء", Icons.Rounded.Groups),
-        Triple("payments", "التسديدات", Icons.Rounded.Payments),
-        Triple("whatsapp", "واتساب", Icons.Rounded.Chat),
+        Triple("visas", "الفيز", Icons.Rounded.Description),
+        Triple("people", "المسافرون والمسؤولون", Icons.Rounded.Groups),
+        Triple("payments", "التسديدات والمحاسب", Icons.Rounded.Payments),
+        Triple("whatsapp", "واتساب وجهة الإصدار", Icons.Rounded.Chat),
         Triple("appearance", "الشكل والواجهة", Icons.Rounded.Palette),
         Triple("data", "البيانات والنسخ", Icons.Rounded.Storage),
         Triple("advanced", "متقدم", Icons.Rounded.Tune)
@@ -1076,7 +1060,7 @@ private fun SettingsRoot(onOpen: (String) -> Unit) {
     ) {
         item {
             Text("المزيد والإعدادات", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Text("إعدادات متشعبة بدل صفحة طويلة واحدة.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("كل قاعدة قابلة للتعديل بدون تغيير بيانات المصدر.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         items(entries) { e ->
             Surface(
@@ -1084,10 +1068,7 @@ private fun SettingsRoot(onOpen: (String) -> Unit) {
                 shape = RoundedCornerShape(16.dp),
                 tonalElevation = 1.dp
             ) {
-                Row(
-                    Modifier.fillMaxWidth().padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(e.third, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
                     Text(e.second, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
