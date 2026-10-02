@@ -8,7 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 4) {
+class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 5) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE transactions(
@@ -63,11 +63,27 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 phone TEXT,
                 responsible_id TEXT,
                 responsible_relation TEXT,
-                is_responsible INTEGER NOT NULL DEFAULT 0
+                is_responsible INTEGER NOT NULL DEFAULT 0,
+                merged_into_id TEXT
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX idx_passenger_name ON passengers(normalized_name)")
         db.execSQL("CREATE INDEX idx_passenger_passport ON passengers(passport)")
+        db.execSQL("CREATE INDEX idx_passenger_merged_into ON passengers(merged_into_id)")
+
+        db.execSQL("""
+            CREATE TABLE passenger_aliases(
+                id TEXT PRIMARY KEY,
+                passenger_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                value TEXT NOT NULL,
+                normalized_value TEXT NOT NULL,
+                source_passenger_id TEXT,
+                created_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_passenger_alias_lookup ON passenger_aliases(kind, normalized_value)")
+        db.execSQL("CREATE INDEX idx_passenger_alias_owner ON passenger_aliases(passenger_id)")
 
         db.execSQL("""
             CREATE TABLE passenger_files(
@@ -294,6 +310,31 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             putSettingIfMissing(db, "color_void", "#EB5757")
             putSettingIfMissing(db, "color_payment", "#56CCF2")
             putSettingIfMissing(db, "color_unknown", "#6A4C93")
+        }
+        if (oldVersion < 5) {
+            db.execSQL("ALTER TABLE passengers ADD COLUMN merged_into_id TEXT")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_passenger_merged_into ON passengers(merged_into_id)")
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS passenger_aliases(
+                    id TEXT PRIMARY KEY,
+                    passenger_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    normalized_value TEXT NOT NULL,
+                    source_passenger_id TEXT,
+                    created_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_passenger_alias_lookup ON passenger_aliases(kind, normalized_value)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_passenger_alias_owner ON passenger_aliases(passenger_id)")
+            db.rawQuery("SELECT id,name,passport,phone FROM passengers", null).use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getString(0)
+                    addAlias(db, id, "NAME", c.getString(1), id)
+                    if (!c.isNull(2)) addAlias(db, id, "PASSPORT", c.getString(2), id)
+                    if (!c.isNull(3)) addAlias(db, id, "PHONE", c.getString(3), id)
+                }
+            }
         }
     }
 
