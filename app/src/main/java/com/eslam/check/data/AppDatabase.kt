@@ -8,7 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 3) {
+class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 4) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE transactions(
@@ -35,6 +35,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 reference_total REAL,
                 airline TEXT,
                 visa_country TEXT,
+                external_link TEXT,
+                commission_rule_snapshot TEXT,
                 review_state TEXT NOT NULL,
                 warning TEXT,
                 note TEXT,
@@ -66,6 +68,19 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         """.trimIndent())
         db.execSQL("CREATE INDEX idx_passenger_name ON passengers(normalized_name)")
         db.execSQL("CREATE INDEX idx_passenger_passport ON passengers(passport)")
+
+        db.execSQL("""
+            CREATE TABLE passenger_files(
+                id TEXT PRIMARY KEY,
+                passenger_id TEXT NOT NULL,
+                uri TEXT NOT NULL,
+                mime_type TEXT,
+                display_name TEXT,
+                is_primary INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_passenger_files_owner ON passenger_files(passenger_id)")
 
         db.execSQL("""
             CREATE TABLE responsible_contacts(
@@ -112,6 +127,16 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 prefix TEXT PRIMARY KEY,
                 airline TEXT NOT NULL,
                 learned INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+
+        db.execSQL("""
+            CREATE TABLE airlines(
+                id TEXT PRIMARY KEY,
+                code TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL UNIQUE,
+                active INTEGER NOT NULL DEFAULT 1,
                 updated_at INTEGER NOT NULL
             )
         """.trimIndent())
@@ -228,6 +253,48 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 put("updated_at", System.currentTimeMillis())
             }, SQLiteDatabase.CONFLICT_REPLACE)
         }
+        if (oldVersion < 4) {
+            db.execSQL("ALTER TABLE transactions ADD COLUMN external_link TEXT")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN commission_rule_snapshot TEXT")
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS passenger_files(
+                    id TEXT PRIMARY KEY,
+                    passenger_id TEXT NOT NULL,
+                    uri TEXT NOT NULL,
+                    mime_type TEXT,
+                    display_name TEXT,
+                    is_primary INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_passenger_files_owner ON passenger_files(passenger_id)")
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS airlines(
+                    id TEXT PRIMARY KEY,
+                    code TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL UNIQUE,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    updated_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            seedAirlines(db)
+            putSettingIfMissing(db, "visa_link", "https://docs.google.com/spreadsheets/d/1NwV7H_9AGEWunvE6rY5d-U4qi6lOkME23oawFA2jx_Q/edit?usp=drivesdk")
+            putSettingIfMissing(db, "accountant_name", "المحاسب")
+            putSettingIfMissing(db, "accountant_whatsapp", "")
+            putSettingIfMissing(db, "theme_preset", "NAVY")
+            putSettingIfMissing(db, "theme_primary", "")
+            putSettingIfMissing(db, "theme_background", "")
+            putSettingIfMissing(db, "theme_surface", "")
+            putSettingIfMissing(db, "theme_text", "")
+            putSettingIfMissing(db, "font_scale", "1.0")
+            putSettingIfMissing(db, "color_ticket", "#2F80ED")
+            putSettingIfMissing(db, "color_visa", "#7B61FF")
+            putSettingIfMissing(db, "color_change", "#F2994A")
+            putSettingIfMissing(db, "color_refund", "#27AE60")
+            putSettingIfMissing(db, "color_void", "#EB5757")
+            putSettingIfMissing(db, "color_payment", "#56CCF2")
+            putSettingIfMissing(db, "color_unknown", "#6A4C93")
+        }
     }
 
     private fun seedDefaults(db: SQLiteDatabase) {
@@ -241,6 +308,23 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         putSetting(db, "bridge_reject_on_error", "true")
         putSetting(db, "bridge_pdf_experimental", "false")
         putSetting(db, "bridge_default_mode", "CUMULATIVE")
+        putSetting(db, "visa_link", "https://docs.google.com/spreadsheets/d/1NwV7H_9AGEWunvE6rY5d-U4qi6lOkME23oawFA2jx_Q/edit?usp=drivesdk")
+        putSetting(db, "accountant_name", "المحاسب")
+        putSetting(db, "accountant_whatsapp", "")
+        putSetting(db, "theme_preset", "NAVY")
+        putSetting(db, "theme_primary", "")
+        putSetting(db, "theme_background", "")
+        putSetting(db, "theme_surface", "")
+        putSetting(db, "theme_text", "")
+        putSetting(db, "font_scale", "1.0")
+        putSetting(db, "color_ticket", "#2F80ED")
+        putSetting(db, "color_visa", "#7B61FF")
+        putSetting(db, "color_change", "#F2994A")
+        putSetting(db, "color_refund", "#27AE60")
+        putSetting(db, "color_void", "#EB5757")
+        putSetting(db, "color_payment", "#56CCF2")
+        putSetting(db, "color_unknown", "#6A4C93")
+        seedAirlines(db)
 
         val defaults = listOf(
             CommissionRule(UUID.randomUUID().toString(), "Iraqi Airways", RuleKind.PRIVATE_MANUAL, 0.0, note = "النسبة على Base Fare وتتغير حسب القاعدة/الفترة؛ تذاكر كشف IQD تُصنف عراقية تلقائيًا"),
@@ -266,6 +350,43 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         db.insert("settings", null, ContentValues().apply {
             put("key", key); put("value", value)
         })
+    }
+
+    private fun putSettingIfMissing(db: SQLiteDatabase, key: String, value: String) {
+        db.insertWithOnConflict("settings", null, ContentValues().apply {
+            put("key", key); put("value", value)
+        }, SQLiteDatabase.CONFLICT_IGNORE)
+    }
+
+    private fun seedAirlines(db: SQLiteDatabase) {
+        val now = System.currentTimeMillis()
+        val items = listOf(
+            "IA" to "Iraqi Airways",
+            "G9" to "Air Arabia",
+            "FZ" to "Flydubai",
+            "PC" to "Pegasus",
+            "TK" to "Turkish Airlines",
+            "QR" to "Qatar Airways",
+            "EK" to "Emirates",
+            "RJ" to "Royal Jordanian",
+            "IF" to "Fly Baghdad",
+            "ME" to "Middle East Airlines",
+            "OV" to "SalamAir",
+            "XY" to "Flynas",
+            "GF" to "Gulf Air",
+            "MS" to "EgyptAir",
+            "NP" to "Nile Air",
+            "RB" to "Fly Cham"
+        )
+        items.forEach { (code, name) ->
+            db.insertWithOnConflict("airlines", null, ContentValues().apply {
+                put("id", "AIR-" + code)
+                put("code", code)
+                put("name", name)
+                put("active", 1)
+                put("updated_at", now)
+            }, SQLiteDatabase.CONFLICT_IGNORE)
+        }
     }
 
     private fun insertRule(db: SQLiteDatabase, rule: CommissionRule) {
@@ -422,6 +543,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         put("pnr", tx.pnr); put("route", tx.route)
         put("amount", tx.amount); put("ledger_effect", tx.ledgerEffect); put("discount", tx.discount); put("balance_after", tx.balanceAfter)
         put("base_fare", tx.baseFare); put("reference_total", tx.referenceTotal); put("airline", tx.airline); put("visa_country", tx.visaCountry)
+        put("external_link", tx.externalLink); put("commission_rule_snapshot", tx.commissionRuleSnapshot)
         put("review_state", tx.reviewState.name); put("warning", tx.warning); put("note", tx.note); put("flags", tx.flags); put("raw_text", tx.rawText)
         put("source_hash", tx.sourceHash); put("imported_at", tx.importedAt); put("reviewed_at", tx.reviewedAt)
         put("changed_after_review", if (tx.changedAfterReview) 1 else 0)
@@ -452,10 +574,10 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         val where = mutableListOf<String>()
         val args = mutableListOf<String>()
         if (search.isNotBlank()) {
-            where += "(pnr LIKE ? OR operation_no LIKE ? OR airline LIKE ? OR visa_country LIKE ? OR note LIKE ? OR id IN (SELECT tp.tx_id FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id WHERE p.normalized_name LIKE ? OR p.passport LIKE ? OR tp.document_no LIKE ?))"
+            where += "(pnr LIKE ? OR operation_no LIKE ? OR airline LIKE ? OR visa_country LIKE ? OR note LIKE ? OR id IN (SELECT tp.tx_id FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id WHERE p.normalized_name LIKE ? OR p.passport LIKE ? OR p.phone LIKE ? OR tp.document_no LIKE ?))"
             val q = "%${normalize(search)}%"
             val raw = "%${search.trim()}%"
-            args += listOf(raw, raw, raw, raw, raw, q, raw, raw)
+            args += listOf(raw, raw, raw, raw, raw, q, raw, raw, raw)
         }
         if (types.isNotEmpty()) {
             where += "type IN (${types.joinToString(",") { "?" }})"
@@ -490,8 +612,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         if (query.isBlank()) return emptyList()
         val out = mutableListOf<Passenger>()
         readableDatabase.rawQuery(
-            "SELECT * FROM passengers WHERE normalized_name LIKE ? OR passport LIKE ? ORDER BY name LIMIT ?",
-            arrayOf("%${normalize(query)}%", "%${query.trim()}%", limit.toString())
+            "SELECT * FROM passengers WHERE normalized_name LIKE ? OR passport LIKE ? OR phone LIKE ? ORDER BY name LIMIT ?",
+            arrayOf("%${normalize(query)}%", "%${query.trim()}%", "%${query.trim()}%", limit.toString())
         ).use { c -> while (c.moveToNext()) out += c.toPassenger() }
         return out
     }
@@ -547,10 +669,17 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun markReview(id: String, state: ReviewState) {
-        writableDatabase.update("transactions", ContentValues().apply {
+        val tx = transaction(id)
+        val values = ContentValues().apply {
             put("review_state", state.name)
-            if (state == ReviewState.REVIEWED) put("reviewed_at", System.currentTimeMillis()) else putNull("reviewed_at")
-        }, "id=?", arrayOf(id))
+            if (state == ReviewState.REVIEWED) {
+                put("reviewed_at", System.currentTimeMillis())
+                if (tx?.commissionRuleSnapshot.isNullOrBlank() && tx?.type == TxType.TICKET) {
+                    ruleForTransaction(tx)?.let { put("commission_rule_snapshot", ruleSnapshot(it)) }
+                }
+            } else putNull("reviewed_at")
+        }
+        writableDatabase.update("transactions", values, "id=?", arrayOf(id))
         audit("transaction", id, "review", state.name)
     }
 
@@ -639,6 +768,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         statementSeq = inn("statement_seq"), batchId = sn("batch_id"), pnr = sn("pnr"), route = sn("route"),
         amount = d("amount"), ledgerEffect = dn("ledger_effect"), discount = d("discount"), balanceAfter = dn("balance_after"),
         baseFare = dn("base_fare"), referenceTotal = dn("reference_total"), airline = sn("airline"), visaCountry = sn("visa_country"),
+        externalLink = sn("external_link"), commissionRuleSnapshot = sn("commission_rule_snapshot"),
         reviewState = ReviewState.valueOf(s("review_state")), warning = sn("warning"), note = sn("note"), flags = sn("flags"), rawText = sn("raw_text"),
         sourceHash = sn("source_hash"), importedAt = l("imported_at"), reviewedAt = ln("reviewed_at"), changedAfterReview = i("changed_after_review") == 1
     )
@@ -734,7 +864,201 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         return pax.firstOrNull { !it.phone.isNullOrBlank() }?.phone
     }
 
-    fun airlineNames(): List<String> = rules().map { it.airline }.distinct().sorted()
+    fun airlineNames(): List<String> = airlines().map { it.name }
+
+    fun airlines(): List<AirlineInfo> {
+        val out = mutableListOf<AirlineInfo>()
+        readableDatabase.rawQuery("SELECT * FROM airlines WHERE active=1 ORDER BY name", null).use { c ->
+            while (c.moveToNext()) out += AirlineInfo(
+                id = c.s("id"), code = c.s("code"), name = c.s("name"),
+                active = c.i("active") == 1, updatedAt = c.l("updated_at")
+            )
+        }
+        return out
+    }
+
+    fun saveAirline(code: String, name: String): AirlineInfo {
+        val cleanCode = code.trim().uppercase().ifBlank {
+            "A" + (airlines().size + 1).toString().padStart(2, '0')
+        }
+        val cleanName = name.trim()
+        val existing = readableDatabase.rawQuery(
+            "SELECT * FROM airlines WHERE LOWER(name)=LOWER(?) OR code=? LIMIT 1",
+            arrayOf(cleanName, cleanCode)
+        ).use { c -> if (c.moveToFirst()) AirlineInfo(c.s("id"), c.s("code"), c.s("name"), c.i("active")==1, c.l("updated_at")) else null }
+        if (existing != null) return existing
+        val item = AirlineInfo("AIR-" + UUID.randomUUID().toString(), cleanCode, cleanName)
+        writableDatabase.insert("airlines", null, ContentValues().apply {
+            put("id", item.id); put("code", item.code); put("name", item.name); put("active", 1); put("updated_at", item.updatedAt)
+        })
+        audit("airline", item.id, "create", "${item.code}|${item.name}")
+        return item
+    }
+
+    private fun resolveAirlineToken(value: String?): String? {
+        val token = value?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        readableDatabase.rawQuery(
+            "SELECT name FROM airlines WHERE UPPER(code)=UPPER(?) OR LOWER(name)=LOWER(?) LIMIT 1",
+            arrayOf(token, token)
+        ).use { c -> if (c.moveToFirst()) return c.getString(0) }
+        return token
+    }
+
+    fun ruleForTransaction(tx: Transaction): CommissionRule? {
+        val airline = tx.airline ?: return null
+        val candidates = rules().filter { it.airline.equals(airline, true) }
+            .filter { r -> r.effectiveFrom.isNullOrBlank() || tx.transactionDate.isNullOrBlank() || r.effectiveFrom <= tx.transactionDate }
+        val reverse = isReverseRoute(tx.route)
+        return candidates
+            .filter { r -> r.direction == "ANY" || (r.direction == "REVERSE" && reverse) || (r.direction == "NORMAL" && !reverse) }
+            .maxByOrNull { it.effectiveFrom.orEmpty() }
+            ?: candidates.maxByOrNull { it.effectiveFrom.orEmpty() }
+    }
+
+    private fun ruleSnapshot(rule: CommissionRule): String = listOf(
+        rule.airline, rule.kind.name, rule.value.toString(), rule.roundTripValue?.toString().orEmpty(),
+        rule.direction, rule.effectiveFrom.orEmpty(), rule.note.orEmpty()
+    ).joinToString("~")
+
+    private fun isReverseRoute(route: String?): Boolean {
+        val airports = route.orEmpty().replace(" ", "-").split("-").filter { it.isNotBlank() }
+        if (airports.size < 2) return false
+        val iraq = setOf("BGW", "BSR", "NJF", "EBL", "ISU", "KIK")
+        return airports.first().uppercase() !in iraq && airports.drop(1).any { it.uppercase() in iraq }
+    }
+
+    fun responsibleForTransaction(txId: String): Passenger? {
+        val pax = passengersFor(txId)
+        val responsibleIds = pax.mapNotNull { it.responsibleId }.distinct()
+        if (responsibleIds.size == 1) return passengerById(responsibleIds.first())
+        val direct = pax.filter { it.isResponsible }
+        return direct.singleOrNull()
+    }
+
+    fun assignResponsibleForTransaction(txId: String, responsibleId: String) {
+        val pax = passengersFor(txId)
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.update("passengers", ContentValues().apply { put("is_responsible", 1); putNull("responsible_id") }, "id=?", arrayOf(responsibleId))
+            pax.forEach { p ->
+                if (p.id == responsibleId) {
+                    writableDatabase.update("passengers", ContentValues().apply { putNull("responsible_id") }, "id=?", arrayOf(p.id))
+                } else {
+                    writableDatabase.update("passengers", ContentValues().apply { put("responsible_id", responsibleId) }, "id=?", arrayOf(p.id))
+                }
+            }
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction() }
+        audit("transaction", txId, "assign_responsible_group", responsibleId)
+    }
+
+    fun assignResponsibleForPnr(pnr: String, responsibleId: String) {
+        val txIds = transactions(search = pnr, limit = 500).filter { it.pnr.equals(pnr, true) }.map { it.id }
+        val passengerIds = linkedSetOf<String>()
+        txIds.forEach { id -> passengersFor(id).forEach { passengerIds += it.id } }
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.update("passengers", ContentValues().apply { put("is_responsible", 1); putNull("responsible_id") }, "id=?", arrayOf(responsibleId))
+            passengerIds.forEach { pid ->
+                val cv = ContentValues()
+                if (pid == responsibleId) cv.putNull("responsible_id") else cv.put("responsible_id", responsibleId)
+                writableDatabase.update("passengers", cv, "id=?", arrayOf(pid))
+            }
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction() }
+        audit("pnr", pnr, "assign_responsible_group", responsibleId)
+    }
+
+    fun transactionsForPassenger(passengerId: String): List<Transaction> {
+        val out = mutableListOf<Transaction>()
+        readableDatabase.rawQuery("""
+            SELECT t.* FROM transactions t
+            JOIN tx_passengers tp ON tp.tx_id=t.id
+            WHERE tp.passenger_id=?
+            ORDER BY COALESCE(t.transaction_date,'') DESC, t.imported_at DESC
+        """.trimIndent(), arrayOf(passengerId)).use { c -> while (c.moveToNext()) out += c.toTransaction() }
+        return out
+    }
+
+    fun transactionsForResponsible(responsibleId: String): List<Transaction> {
+        val out = mutableListOf<Transaction>()
+        readableDatabase.rawQuery("""
+            SELECT DISTINCT t.* FROM transactions t
+            JOIN tx_passengers tp ON tp.tx_id=t.id
+            JOIN passengers p ON p.id=tp.passenger_id
+            WHERE p.responsible_id=?
+            ORDER BY COALESCE(t.transaction_date,'') DESC, t.imported_at DESC
+        """.trimIndent(), arrayOf(responsibleId)).use { c -> while (c.moveToNext()) out += c.toTransaction() }
+        return out
+    }
+
+    fun relatedOperations(txId: String): List<Transaction> {
+        val tx = transaction(txId) ?: return emptyList()
+        val docs = txPassengerDetails(txId).mapNotNull { it.documentNo?.trim()?.takeIf(String::isNotBlank) }.toSet()
+        val pnr = tx.pnr
+        val candidates = if (!pnr.isNullOrBlank()) transactions(search = pnr, limit = 500).filter { it.id != txId && it.pnr.equals(pnr, true) } else emptyList()
+        if (docs.isEmpty()) return candidates
+        return candidates.sortedWith(compareByDescending<Transaction> { other ->
+            txPassengerDetails(other.id).any { it.documentNo in docs }
+        }.thenBy { it.transactionDate.orEmpty() })
+    }
+
+    fun passengerFiles(passengerId: String): List<PassengerFile> {
+        val out = mutableListOf<PassengerFile>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM passenger_files WHERE passenger_id=? ORDER BY is_primary DESC, created_at DESC",
+            arrayOf(passengerId)
+        ).use { c ->
+            while (c.moveToNext()) out += PassengerFile(
+                id = c.s("id"), passengerId = c.s("passenger_id"), uri = c.s("uri"),
+                mimeType = c.sn("mime_type"), displayName = c.sn("display_name"),
+                isPrimary = c.i("is_primary") == 1, createdAt = c.l("created_at")
+            )
+        }
+        return out
+    }
+
+    fun addPassengerFile(passengerId: String, uri: String, mimeType: String?, displayName: String?): PassengerFile {
+        val first = passengerFiles(passengerId).isEmpty()
+        val item = PassengerFile(UUID.randomUUID().toString(), passengerId, uri, mimeType, displayName, first)
+        writableDatabase.insert("passenger_files", null, ContentValues().apply {
+            put("id", item.id); put("passenger_id", passengerId); put("uri", uri); put("mime_type", mimeType)
+            put("display_name", displayName); put("is_primary", if (item.isPrimary) 1 else 0); put("created_at", item.createdAt)
+        })
+        audit("passenger", passengerId, "add_passport_file", displayName ?: uri)
+        return item
+    }
+
+    fun deletePassengerFile(id: String) {
+        val owner = readableDatabase.rawQuery("SELECT passenger_id FROM passenger_files WHERE id=?", arrayOf(id))
+            .use { c -> if (c.moveToFirst()) c.getString(0) else "" }
+        writableDatabase.delete("passenger_files", "id=?", arrayOf(id))
+        if (owner.isNotBlank()) audit("passenger", owner, "delete_passport_file", id)
+    }
+
+    fun setPrimaryPassengerFile(passengerId: String, id: String) {
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.update("passenger_files", ContentValues().apply { put("is_primary", 0) }, "passenger_id=?", arrayOf(passengerId))
+            writableDatabase.update("passenger_files", ContentValues().apply { put("is_primary", 1) }, "id=?", arrayOf(id))
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction() }
+        audit("passenger", passengerId, "primary_passport_file", id)
+    }
+
+    fun auditEvents(entityType: String, entityId: String, limit: Int = 100): List<AuditEvent> {
+        val out = mutableListOf<AuditEvent>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM audit_log WHERE entity_type=? AND entity_id=? ORDER BY created_at DESC LIMIT ?",
+            arrayOf(entityType, entityId, limit.toString())
+        ).use { c ->
+            while (c.moveToNext()) out += AuditEvent(
+                id = c.s("id"), entityType = c.s("entity_type"), entityId = c.s("entity_id"),
+                action = c.s("action"), details = c.sn("details"), createdAt = c.l("created_at")
+            )
+        }
+        return out
+    }
 
     private fun normalizeBusiness(parsed: ParsedTransaction): ParsedTransaction {
         var type = parsed.type
@@ -745,7 +1069,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
 
         val visa = parsed.visaCountry ?: parsed.passengers.asSequence().mapNotNull { visaCountryFromProduct(it.product) }.firstOrNull()
         val airline = when {
-            !parsed.airline.isNullOrBlank() -> parsed.airline
+            !parsed.airline.isNullOrBlank() -> resolveAirlineToken(parsed.airline)
             type == TxType.TICKET && parsed.currency == Currency.IQD -> "Iraqi Airways"
             type == TxType.TICKET -> parsed.passengers.asSequence()
                 .mapNotNull { ticketPrefix(it.documentNo) }
