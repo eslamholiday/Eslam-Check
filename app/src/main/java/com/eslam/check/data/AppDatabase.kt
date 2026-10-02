@@ -185,6 +185,48 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                     updated_at INTEGER NOT NULL
                 )
             """.trimIndent())
+
+            // Migrate only the old stock Iraqi default; never overwrite a rule the user has customized.
+            val stockIraqiId = db.rawQuery(
+                "SELECT id FROM commission_rules WHERE airline=? AND kind=? AND ABS(value-4.0)<0.0001 AND learned=0 AND (note=? OR note IS NULL) LIMIT 1",
+                arrayOf("Iraqi Airways", RuleKind.PERCENT_BASE.name, "قابل للتعديل")
+            ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+            if (stockIraqiId != null) {
+                db.update("commission_rules", ContentValues().apply {
+                    put("kind", RuleKind.PRIVATE_MANUAL.name)
+                    put("value", 0.0)
+                    put("note", "النسبة على Base Fare وتتغير حسب القاعدة/الفترة؛ تذاكر كشف IQD تُصنف عراقية تلقائيًا")
+                    put("updated_at", System.currentTimeMillis())
+                }, "id=?", arrayOf(stockIraqiId))
+            }
+
+            val v3Defaults = listOf(
+                CommissionRule(UUID.randomUUID().toString(), "Air Arabia", RuleKind.FIXED_PER_PASSENGER, 5.0, note = "رسم إصدار +5 لكل مسافر"),
+                CommissionRule(UUID.randomUUID().toString(), "Flydubai", RuleKind.FIXED_PER_PASSENGER, 5.0, note = "رسم إصدار +5 لكل مسافر"),
+                CommissionRule(UUID.randomUUID().toString(), "Pegasus", RuleKind.FIXED_PER_PASSENGER, 15.0, roundTripValue = 35.0, note = "15$ اتجاه واحد / 35$ ذهاب وإياب لكل مسافر"),
+                CommissionRule(UUID.randomUUID().toString(), "Turkish Airlines", RuleKind.PRIVATE_MANUAL, 0.0),
+                CommissionRule(UUID.randomUUID().toString(), "Qatar Airways", RuleKind.PRIVATE_MANUAL, 0.0),
+                CommissionRule(UUID.randomUUID().toString(), "Emirates", RuleKind.PRIVATE_MANUAL, 0.0),
+                CommissionRule(UUID.randomUUID().toString(), "Royal Jordanian", RuleKind.PRIVATE_MANUAL, 0.0),
+                CommissionRule(UUID.randomUUID().toString(), "Fly Baghdad", RuleKind.PRIVATE_MANUAL, 0.0),
+                CommissionRule(UUID.randomUUID().toString(), "Middle East Airlines", RuleKind.PRIVATE_MANUAL, 0.0, note = "بيروت → بغداد قد تكون له قاعدة عكسية مختلفة"),
+                CommissionRule(UUID.randomUUID().toString(), "SalamAir", RuleKind.PRIVATE_MANUAL, 0.0),
+                CommissionRule(UUID.randomUUID().toString(), "Flynas", RuleKind.PRIVATE_MANUAL, 0.0)
+            )
+            v3Defaults.forEach { rule ->
+                val exists = db.rawQuery(
+                    "SELECT 1 FROM commission_rules WHERE LOWER(airline)=LOWER(?) LIMIT 1",
+                    arrayOf(rule.airline)
+                ).use { it.moveToFirst() }
+                if (!exists) insertRule(db, rule)
+            }
+
+            db.insertWithOnConflict("airline_prefixes", null, ContentValues().apply {
+                put("prefix", "073")
+                put("airline", "Iraqi Airways")
+                put("learned", 0)
+                put("updated_at", System.currentTimeMillis())
+            }, SQLiteDatabase.CONFLICT_REPLACE)
         }
     }
 
