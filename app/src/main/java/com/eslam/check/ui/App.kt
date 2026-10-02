@@ -324,37 +324,84 @@ private fun StatCard(title: String, value: Int, modifier: Modifier, onClick: () 
 private fun ReviewScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
     val all by vm.transactions.collectAsState()
     var search by remember { mutableStateOf("") }
-    var typeFilter by remember { mutableStateOf<TxType?>(null) }
-    var onlyOpen by remember { mutableStateOf(true) }
+    var typeFilter by remember { mutableStateOf<Set<TxType>>(emptySet()) }
+    var statusFilter by remember { mutableStateOf("OPEN") }
 
-    val filtered = remember(all, search, typeFilter, onlyOpen) {
+    LaunchedEffect(search) { vm.refresh(search = search) }
+    DisposableEffect(Unit) {
+        onDispose { vm.refresh() }
+    }
+
+    val filtered = remember(all, typeFilter, statusFilter) {
         all.filter { tx ->
-            (typeFilter == null || tx.type == typeFilter) &&
-                (!onlyOpen || tx.reviewState != ReviewState.REVIEWED) &&
-                (search.isBlank() ||
-                    tx.pnr.orEmpty().contains(search, true) ||
-                    tx.operationNo.orEmpty().contains(search, true) ||
-                    tx.airline.orEmpty().contains(search, true) ||
-                    tx.note.orEmpty().contains(search, true))
+            (typeFilter.isEmpty() || tx.type in typeFilter) &&
+                when (statusFilter) {
+                    "OPEN" -> tx.reviewState != ReviewState.REVIEWED
+                    "AMBIG" -> tx.type == TxType.UNKNOWN || (tx.type == TxType.TICKET && tx.currency == Currency.USD && tx.airline.isNullOrBlank())
+                    "CHANGED" -> tx.changedAfterReview
+                    "FOLLOW" -> tx.reviewState == ReviewState.FOLLOW_UP
+                    "REVIEWED" -> tx.reviewState == ReviewState.REVIEWED
+                    else -> true
+                }
         }
     }
 
     Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("المراجعة", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text("المراجعة والتصنيف", fontSize = 24.sp, fontWeight = FontWeight.Bold)
         OutlinedTextField(
             value = search,
             onValueChange = { search = it },
             modifier = Modifier.fillMaxWidth(),
             leadingIcon = { Icon(Icons.Rounded.Search, null) },
-            label = { Text("PNR / رقم العملية / شركة") },
+            label = { Text("PNR / عملية / مسافر / جواز / تذكرة / خط") },
             singleLine = true
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            FilterChip(selected = onlyOpen, onClick = { onlyOpen = !onlyOpen }, label = { Text("غير المراجع") })
-            FilterChip(selected = typeFilter == null, onClick = { typeFilter = null }, label = { Text("الكل") })
-            FilterChip(selected = typeFilter == TxType.TICKET, onClick = { typeFilter = TxType.TICKET }, label = { Text("تذاكر") })
-            FilterChip(selected = typeFilter == TxType.VISA, onClick = { typeFilter = TxType.VISA }, label = { Text("فيز") })
+
+        Text("نوع العملية", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            FilterChip(
+                selected = typeFilter.isEmpty(),
+                onClick = { typeFilter = emptySet() },
+                label = { Text("الكل") }
+            )
+            listOf(
+                TxType.TICKET to "تذاكر",
+                TxType.VISA to "فيز",
+                TxType.CHANGE to "تغيير",
+                TxType.REFUND to "استرجاع",
+                TxType.PAYMENT to "تسديد",
+                TxType.VOID to "Void"
+            ).forEach { (type, label) ->
+                FilterChip(
+                    selected = type in typeFilter,
+                    onClick = {
+                        typeFilter = if (type in typeFilter) typeFilter - type else typeFilter + type
+                    },
+                    label = { Text(label) }
+                )
+            }
         }
+
+        Text("حالة التدقيق", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf(
+                "OPEN" to "غير المراجع",
+                "AMBIG" to "مبهم/خط غير محدد",
+                "CHANGED" to "تغيّر",
+                "FOLLOW" to "متابعة",
+                "REVIEWED" to "مراجع",
+                "ALL" to "الكل"
+            ).forEach { (key, label) ->
+                FilterChip(selected = statusFilter == key, onClick = { statusFilter = key }, label = { Text(label) })
+            }
+        }
+
         Text("${filtered.size} عملية", color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(filtered, key = { it.id }) { tx ->
@@ -366,9 +413,10 @@ private fun ReviewScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
 
 @Composable
 private fun TransactionCard(tx: Transaction, onDetail: () -> Unit, onReview: () -> Unit) {
+    val airlineMissing = tx.type == TxType.TICKET && tx.currency == Currency.USD && tx.airline.isNullOrBlank()
     val accent = when {
         tx.changedAfterReview -> Warn
-        tx.type == TxType.UNKNOWN -> Mystery
+        tx.type == TxType.UNKNOWN || airlineMissing -> Mystery
         tx.reviewState == ReviewState.REVIEWED -> Good
         tx.reviewState == ReviewState.FOLLOW_UP -> Warn
         else -> MaterialTheme.colorScheme.primary
@@ -390,6 +438,15 @@ private fun TransactionCard(tx: Transaction, onDetail: () -> Unit, onReview: () 
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                when {
+                    tx.type == TxType.TICKET -> Text(
+                        "الخط: " + (tx.airline ?: "مبهم — اختر من داخل PNR"),
+                        fontSize = 12.sp,
+                        color = if (airlineMissing) Mystery else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    tx.type == TxType.VISA || (tx.type == TxType.VOID && tx.visaCountry != null) ->
+                        Text("الفيزا: " + (tx.visaCountry ?: "غير محددة"), fontSize = 12.sp)
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(formatMoney(tx.amount, tx.currency), fontWeight = FontWeight.SemiBold)
                     if (tx.discount != 0.0) Text("Discount ${formatMoney(tx.discount, tx.currency)}", fontSize = 12.sp)
