@@ -499,6 +499,9 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
     var search by remember { mutableStateOf("") }
     var category by remember { mutableStateOf(PassengerCategory.ALL) }
     var selected by remember { mutableStateOf<Passenger?>(null) }
+    var mergeMode by remember { mutableStateOf(false) }
+    var mergeSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showMergeDialog by remember { mutableStateOf(false) }
 
     val filtered = remember(passengers, search, category) {
         passengers.filter { p ->
@@ -506,7 +509,8 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                 p.name.contains(search, true) ||
                 p.passport.orEmpty().contains(search, true) ||
                 p.phone.orEmpty().contains(search, true) ||
-                p.id.contains(search, true)
+                p.id.contains(search, true) ||
+                vm.passengerAliases(p.id).any { it.value.contains(search, true) }
             val classOk = when (category) {
                 PassengerCategory.ALL -> true
                 PassengerCategory.RESPONSIBLE -> p.isResponsible
@@ -518,14 +522,35 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("المسافرون", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Text("كل اسم ملف مستقل: عملياته، المسؤول، التابعون، واتساب وملفات الجواز.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("المسافرون", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    if (mergeMode) "حدد شخصين أو أكثر ثم اختر السجل الرئيسي."
+                    else "الاسم الرئيسي يجمع الأسماء البديلة وكل العمليات القديمة والجديدة.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp
+                )
+            }
+            FilledTonalButton(
+                onClick = {
+                    mergeMode = !mergeMode
+                    if (!mergeMode) mergeSelection = emptySet()
+                }
+            ) {
+                Icon(if (mergeMode) Icons.Rounded.Close else Icons.Rounded.CallMerge, null)
+                Spacer(Modifier.width(5.dp))
+                Text(if (mergeMode) "إلغاء" else "دمج")
+            }
+        }
+
         OutlinedTextField(
             search, { search = it }, Modifier.fillMaxWidth(),
-            label = { Text("بحث بالاسم / الهاتف / الجواز الداخلي / ID") },
+            label = { Text("بحث بالاسم / الاسم البديل / الهاتف / الجواز / ID") },
             leadingIcon = { Icon(Icons.Rounded.Search, null) },
             singleLine = true
         )
+
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -540,14 +565,45 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
             }
         }
 
+        if (mergeMode) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {
+                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.MergeType, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("تم تحديد " + mergeSelection.size + " مسافر", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                    TextButton(onClick = { mergeSelection = emptySet() }) { Text("مسح") }
+                }
+            }
+        }
+
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(filtered, key = { it.id }) { p ->
+                val checked = p.id in mergeSelection
                 Surface(
-                    modifier = Modifier.fillMaxWidth().clickable { selected = p },
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        if (mergeMode) {
+                            mergeSelection = if (checked) mergeSelection - p.id else mergeSelection + p.id
+                        } else {
+                            selected = p
+                        }
+                    },
                     shape = RoundedCornerShape(16.dp),
-                    tonalElevation = 1.dp
+                    tonalElevation = 1.dp,
+                    border = if (checked) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null
                 ) {
                     Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (mergeMode) {
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = { value ->
+                                    mergeSelection = if (value) mergeSelection + p.id else mergeSelection - p.id
+                                }
+                            )
+                            Spacer(Modifier.width(6.dp))
+                        }
                         Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
                             Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
                                 Text(p.name.take(2).uppercase(), fontWeight = FontWeight.Bold)
@@ -556,11 +612,17 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(p.name, fontWeight = FontWeight.Bold)
+                            val aliasCount = vm.passengerAliases(p.id).count { it.kind == "NAME" && !it.value.equals(p.name, true) }
                             Text(
-                                when {
-                                    p.isResponsible -> "مسؤول • " + vm.dependentsOf(p.id).size + " تابع"
-                                    p.responsibleId != null -> "تابع"
-                                    else -> "مستقل"
+                                buildString {
+                                    append(
+                                        when {
+                                            p.isResponsible -> "مسؤول • " + vm.dependentsOf(p.id).size + " تابع"
+                                            p.responsibleId != null -> "تابع"
+                                            else -> "مستقل"
+                                        }
+                                    )
+                                    if (aliasCount > 0) append(" • ").append(aliasCount).append(" اسم بديل")
                                 },
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.primary
@@ -570,9 +632,21 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                                 vm.passengerById(rid)?.let { Text("المسؤول: " + it.name, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary) }
                             }
                         }
-                        Icon(Icons.Rounded.ChevronLeft, null)
+                        if (!mergeMode) Icon(Icons.Rounded.ChevronLeft, null)
                     }
                 }
+            }
+        }
+
+        if (mergeMode) {
+            Button(
+                enabled = mergeSelection.size >= 2,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { showMergeDialog = true }
+            ) {
+                Icon(Icons.Rounded.CallMerge, null)
+                Spacer(Modifier.width(6.dp))
+                Text("دمج المحددين (" + mergeSelection.size + ")")
             }
         }
     }
@@ -592,6 +666,72 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
             )
         }
     }
+
+    if (showMergeDialog) {
+        val candidates = passengers.filter { it.id in mergeSelection }
+        MergePassengersDialog(
+            passengers = candidates,
+            onDismiss = { showMergeDialog = false },
+            onConfirm = { primaryId ->
+                vm.mergePassengers(primaryId, mergeSelection - primaryId)
+                mergeSelection = emptySet()
+                mergeMode = false
+                showMergeDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun MergePassengersDialog(
+    passengers: List<Passenger>,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var primaryId by remember(passengers) { mutableStateOf(passengers.firstOrNull()?.id.orEmpty()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("اختيار السجل الرئيسي") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "كل العمليات والأسماء السابقة ستظهر تحت السجل الرئيسي، وأي استيراد مستقبلي باسم قديم سيذهب إليه تلقائيًا.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
+                    Text(
+                        "الدمج قابل للفك لاحقًا من ملف الشخص.",
+                        modifier = Modifier.padding(10.dp),
+                        fontSize = 12.sp
+                    )
+                }
+                LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    items(passengers, key = { it.id }) { p ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { primaryId = p.id }.padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = primaryId == p.id, onClick = { primaryId = p.id })
+                            Column(Modifier.weight(1f)) {
+                                Text(p.name, fontWeight = FontWeight.Bold)
+                                val details = listOfNotNull(
+                                    p.phone?.takeIf { it.isNotBlank() },
+                                    p.passport?.takeIf { it.isNotBlank() }
+                                ).joinToString(" • ")
+                                if (details.isNotBlank()) Text(details, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(enabled = primaryId.isNotBlank(), onClick = { onConfirm(primaryId) }) {
+                Text("دمج في هذا الملف")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+    )
 }
 
 @Composable
