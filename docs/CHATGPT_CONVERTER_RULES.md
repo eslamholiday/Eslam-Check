@@ -1,156 +1,143 @@
-# ChatGPT -> Eslam Check conversion contract
+# ChatGPT -> Eslam Check conversion contract — ECX v3 / K1
 
-Use this contract whenever the user sends Best Choice / Taj Al-Yamama PDF statements for Eslam Check.
+Use this contract whenever the user sends Best Choice / Taj Al-Yamama statements.
 
-## Output version
+## Automatic behavior
 
-New conversions must use **ECX v2**. The Android app remains backward-compatible with ECX v1.
+When the user sends the USD and IQD PDFs with no additional text, treat that as an instruction to:
+
+1. read both statements;
+2. compare them with previously known cumulative statements when available;
+3. apply the agreed translation rules;
+4. produce one combined ECX v3 / K1 import text or file;
+5. ask only about genuinely new ambiguous patterns.
+
+Do not ask the user to repeat this instruction.
 
 ## Source discipline
 
-1. Read the PDF(s) as the source.
-2. Extract source facts exactly; never invent a passenger, amount, route, PNR, passport, ticket number, note, or balance.
-3. Do not calculate commission, profit, expected settlement, Base Fare, or taxes inside ECX.
-4. Business rules that the user explicitly established may be used only for normalization fields such as operation type, airline, and visa country.
-5. If extraction is uncertain, preserve what is certain and add `UNCLEAR`.
+Extract only what the PDFs support. Never invent PNRs, amounts, routes, passengers, ticket numbers, passports, notes or balances.
 
-## Stable IDs
+Business rules explicitly taught by the user may normalize type, Visa country and airline. Do not calculate Base Fare, expected commission, taxes or profit inside ECX.
 
-Every conversion must create deterministic IDs.
+## IDs
 
-### LEDGER_ID
+Account code is always `TY`.
 
-Use:
+Derived ledgers:
 
-- `BC-TAJALYAMAMA-USD`
-- `BC-TAJALYAMAMA-IQD`
+- IQD: `BC-TAJALYAMAMA-IQD`
+- USD: `BC-TAJALYAMAMA-USD`
 
-### OP_ID
+Derived operation ID:
 
-For every operation:
+`<ledger>-<operation number>`
 
-`<LEDGER_ID>-<operation number>`
+DOC_ID and SNAPSHOT_ID must be deterministic from canonical source content, not file name.
 
-The same operation in every later cumulative PDF must always get the same OP_ID.
+Recommended source hash form:
 
-### DOC_ID and SNAPSHOT_ID
+`D<first 16 uppercase hex chars of SHA-256(canonical statement content)>`
 
-Build DOC_ID deterministically from canonical statement content, not from the uploaded file name.
+The exact same source must produce the exact same ID again.
 
-Canonical identity material should include, in sorted ledger order:
+## ECX v3 shape
 
-- ledger ID
-- statement range
-- opening balance
-- closing balance
-- complete ordered set of normalized operation core facts and passenger/item facts
+```
+X3|K1|TY|DOC_ID|SNAPSHOT_ID|C
+L|I|FROM|TO|OPEN_DATE|OPEN|CLOSE|COUNT
+L|U|FROM|TO|OPEN_DATE|OPEN|CLOSE|COUNT
+O|CUR|OP|DATE|TYPE|AMOUNT|BALANCE|PNR|ROUTE|AIR|VISA|DISCOUNT|EFFECT|FLAGS
+Q|CUR|OP|NAME|PTYPE|DOC|VALUE|PASSPORT|PRODUCT|FLAGS
+M|CUR|OP|SOURCE_NOTE
+H|USD_COUNT|IQD_COUNT|PERSON_COUNT|CHECKSUM
+```
 
-Hash that canonical material with SHA-256 and use a short stable form such as:
+## Type normalization
 
-`DOC-<first 16 uppercase hex chars>`
+- Sale Tickets -> T
+- Change / New Change -> C
+- Refund / New Refund -> R
+- Visa Sale -> V
+- Receipt Voucher / ID Voucher Receipt -> P
+- Sale Tickets value 0 under the agreed Taj Al-Yamama pattern -> X
+- Visa value 0 -> X
+- explicit Reissue -> E
+- genuinely unclear -> ?
 
-Use the same value as SNAPSHOT_ID unless a separate snapshot identity is required.
+Special learned cases:
+- operation 15977 is Void.
+- operation 46148 is Change.
 
-Re-uploading the exact same PDF or the same statement with only a renamed file must produce the same DOC_ID/SNAPSHOT_ID.
+These examples confirm the rule patterns; do not hard-code only those operation numbers.
 
-## What to extract
+## Discount translation
 
-For every operation, when printed:
+Ticket: preserve source Discount when printed.
 
-- currency ledger
-- operation number
-- date
-- source label
-- operation amount
-- debit/credit ledger effect
-- running balance
-- PNR
-- route
-- Discount
-- passengers/persons
-- passenger type
-- ticket/document number
-- per-person value
-- passport
-- visa source description
-- explicit source note
+Visa: leave Discount blank.
+Change: leave Discount blank.
+Refund: leave Discount blank.
+Payment: leave Discount blank.
+Cancelled Visa/Void: leave Discount blank unless a future explicit business rule says otherwise.
 
-## Normalized operation rules agreed with the user
+The app may store legacy zero values from older ECX, but new v3 output must omit meaningless zero Discount fields.
 
-Use these ECX v2 SRC values:
+## Airlines
 
-- `TK` Ticket
-- `VI` Visa
-- `CH` Change
-- `RF` Refund
-- `PAY` Payment
-- `VO` Void/cancelled
-- `REI` Reissue
-- `UNK` genuinely unclear
+All normal Ticket sales in the IQD statement are Iraqi Airways -> `IA`.
 
-Apply the following user-specific translation rules:
+Do not infer USD airline from currency or PNR.
 
-1. `TicketOperation Change` and `TicketOperation New Change` => `CH`.
-2. `TicketOperation Refund` and `TicketOperation New Refund` => `RF`.
-3. `Sale Tickets` with source note `تغيير` => `CH`.
-4. A zero-value `Sale Tickets` operation in these Taj Al-Yamama statements => `VO` and add flags `ZERO,VOID`.
-5. A zero-value Visa => `VO`, add `ZERO,CANCEL`.
-6. Receipt Voucher / ID Voucher Receipt => `PAY`.
-7. Do not preserve New Change/New Refund as a separate app type.
+Use an airline code only when source evidence or an agreed mapping identifies it. Known K1 codes are documented in ECX_PROTOCOL.md. Unknown USD airline = blank AIR field.
 
-## Airline normalization
-
-1. Every normal Ticket in the **IQD statement** => `AIRLINE=Iraqi Airways`.
-2. Iraqi Airways may rarely occur in USD. If the agreed source/ticket prefix identifies Iraqi Airways (currently prefix `073`), AIRLINE may be set to `Iraqi Airways`.
-3. For other USD tickets, if airline is not explicitly known from an agreed mapping, leave AIRLINE blank.
-4. Never infer airline from PNR alone.
-5. Never infer an airline solely because a ticket is in USD.
-6. Unknown USD airline is still `SRC=TK`; only its airline is ambiguous.
+Ticket prefix 073 is an agreed Iraqi Airways identifier when applicable.
 
 ## Visa normalization
 
-Normalize the visa country from printed product text, never from price:
+From source wording:
 
-- `VISA UAE FZ` => `UAE`
-- `VISA JORDAN RJ` or `RJ JORDAN VISA` => `JORDAN`
-- `VISA EGYPT` => `EGYPT`
-- `فيزا السعودية` => `SAUDI`
+- VISA UAE FZ -> AE
+- VISA JORDAN RJ / RJ JORDAN VISA -> JO
+- VISA EGYPT -> EG
+- فيزا السعودية -> SA
 
-Visa prices change historically. Preserve each printed per-person value.
+Do not infer Visa country from price.
 
-A multi-person Visa remains one parent operation with multiple P records.
+A multi-person Visa stays one O record plus multiple Q records.
 
-## Ticket values and Discount
+## Passenger records
 
-- P.VALUE is the passenger value printed by the statement.
-- T.DISCOUNT is the total source Discount printed for the operation.
-- Discount is the commission actually deducted from the ticket total in percentage-commission cases, based on the user’s workflow.
-- Do not split source Discount among passengers unless the PDF explicitly provides per-passenger values.
-- Do not invent Base Fare. The app collects Base Fare per passenger and calculates expected commission there.
-- Percentage commissions are always applied to Base Fare, same percentage for ADT/CHD/INF.
-- Fixed issuance fees are per passenger and remain app-side rules.
+Preserve:
+- name
+- ADT/CHD/INF as A/C/I
+- ticket/document number
+- per-person value
+- passport when printed
+- product text when useful for Visa normalization
 
-## Route / reverse
+Do not invent Base Fare.
 
-- Normalize route with hyphens.
-- Reverse is a business-rule concept handled by the app/rule setup.
-- The known special example is departure **BEY -> BGW**; BGW -> BEY and BGW -> BEY -> BGW are not reverse.
-- Do not change source route to force a commission rule.
+## Route and PNR
 
-## Counts and validation
+Normalize route using hyphens, e.g. `BGW-BEY-BGW`.
 
-- L transaction count must equal the number of T records for that ledger.
-- Z counts must equal the number of T records by currency.
-- P/N records must point to an existing operation.
-- Keep USD and IQD in one ECX envelope when both PDFs are provided.
-- Do not use SEQ or running BALANCE as operation identity.
+PNR uppercase.
 
-## Preferred user-facing conversion response
+Reverse commission logic belongs to the app and its commission rules, not the converter.
 
-When the user asks to convert a new statement:
+## Counts and checksum
 
-1. one short sentence with what was recognized;
-2. one copyable ECX v2 code block;
-3. only list genuinely new/uncertain translation questions, if any.
+Ledger COUNT must equal O count for that currency.
 
-Do not repeat questions for rules already learned.
+H USD/IQD counts must match O records.
+
+H person count must match Q records.
+
+Checksum is SHA-256 first 12 uppercase hex characters of all normalized non-comment lines before H, joined with LF.
+
+## Response style
+
+When conversion succeeds, keep prose short. Give the import file/text immediately. Mention only new ambiguities that require teaching.
+
+The user should not have to ask “translate it” every time they upload the two statements.
