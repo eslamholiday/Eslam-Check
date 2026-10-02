@@ -268,6 +268,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun addPassengerFileImmediate(passengerId: String, uri: String, mimeType: String?, displayName: String?): PassengerFile =
+        db.addPassengerFile(passengerId, uri, mimeType, displayName)
+
+    fun deletePassengerFileImmediate(id: String) = db.deletePassengerFile(id)
+
+    fun setPrimaryPassengerFileImmediate(passengerId: String, id: String) = db.setPrimaryPassengerFile(passengerId, id)
+
     fun addPassengerFile(passengerId: String, uri: String, mimeType: String?, displayName: String?) {
         viewModelScope.launch(Dispatchers.IO) {
             db.addPassengerFile(passengerId, uri, mimeType, displayName)
