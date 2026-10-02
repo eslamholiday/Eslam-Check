@@ -1023,7 +1023,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 writableDatabase.update("passengers", ContentValues().apply {
                     if (currentPrimary.passport.isNullOrBlank() && !source.passport.isNullOrBlank()) put("passport", source.passport)
                     if (currentPrimary.phone.isNullOrBlank() && !source.phone.isNullOrBlank()) put("phone", source.phone)
-                    if (source.isResponsible) put("is_responsible", 1)
+                    put("is_responsible", if (currentPrimary.isResponsible || source.isResponsible) 1 else 0)
                 }, "id=?", arrayOf(primary.id))
 
                 writableDatabase.update("passengers", ContentValues().apply {
