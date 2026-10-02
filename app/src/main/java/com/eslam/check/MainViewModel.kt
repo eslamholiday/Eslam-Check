@@ -73,6 +73,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         if (isNew) created++ else updated++
                     }
                     db.setSetting("last_bridge_batch", result.batchId)
+                    db.setSetting("last_bridge_snapshot", result.snapshotId)
+                    db.setSetting("last_bridge_document", result.documentId)
                     db.setSetting("last_bridge_mode", result.mode)
                     created to updated
                 }
@@ -153,7 +155,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun transaction(id: String): Transaction? = db.transaction(id)
     fun passengersFor(id: String): List<Passenger> = db.passengersFor(id)
+    fun txPassengerDetails(id: String): List<TxPassengerDetail> = db.txPassengerDetails(id)
     fun passengerSuggestions(query: String): List<Passenger> = db.passengerSuggestions(query)
+    fun passengerById(id: String): Passenger? = db.passengerById(id)
+    fun dependentsOf(id: String): List<Passenger> = db.dependentsOf(id)
+    fun customerPhoneForTransaction(id: String): String? = db.customerPhoneForTransaction(id)
+    fun airlineNames(): List<String> = db.airlineNames()
 
     fun updateTransaction(tx: Transaction) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -166,7 +173,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun saveRule(airline: String, kind: RuleKind, value: Double) {
+    fun saveRule(
+        airline: String,
+        kind: RuleKind,
+        value: Double,
+        roundTripValue: Double? = null,
+        note: String? = null,
+        effectiveFrom: String? = null,
+        direction: String = "ANY"
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             val existing = db.rules().firstOrNull { it.airline.equals(airline.trim(), true) }
             val rule = CommissionRule(
@@ -174,14 +189,45 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 airline = airline.trim(),
                 kind = kind,
                 value = value,
+                roundTripValue = roundTripValue ?: existing?.roundTripValue,
                 reverseOnly = existing?.reverseOnly ?: false,
+                direction = direction,
+                effectiveFrom = effectiveFrom ?: existing?.effectiveFrom,
                 learned = existing?.learned ?: false,
                 active = true,
-                note = existing?.note
+                note = note ?: existing?.note
             )
             db.saveRule(rule)
             _rules.value = db.rules()
             _message.value = "تم حفظ قاعدة العمولة للمستقبل"
+        }
+    }
+
+    fun setPassengerBaseFare(txId: String, passengerId: String, baseFare: Double?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.setPassengerBaseFare(txId, passengerId, baseFare)
+            refresh()
+        }
+    }
+
+    fun setAirline(txId: String, airline: String?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.setAirlineForTransaction(txId, airline, learnPrefix = true)
+            refresh()
+        }
+    }
+
+    fun updatePassenger(person: Passenger) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.updatePassenger(person)
+            refresh()
+        }
+    }
+
+    fun assignResponsible(passengerId: String, responsibleId: String?, relation: String? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.assignResponsible(passengerId, responsibleId, relation)
+            refresh()
         }
     }
 
