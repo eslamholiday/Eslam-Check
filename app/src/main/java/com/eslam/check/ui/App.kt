@@ -233,7 +233,7 @@ private fun DashboardScreen(vm: MainViewModel, onOpenReview: () -> Unit, onDetai
             }
         }
         items(txs.take(8), key = { it.id }) { tx ->
-            TransactionCard(tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
+            TransactionCard(vm, tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
         }
     }
 
@@ -432,21 +432,22 @@ private fun ReviewScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
         Text("${filtered.size} عملية", color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(filtered, key = { it.id }) { tx ->
-                TransactionCard(tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
+                TransactionCard(vm, tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
             }
         }
     }
 }
 
 @Composable
-private fun TransactionCard(tx: Transaction, onDetail: () -> Unit, onReview: () -> Unit) {
+private fun TransactionCard(vm: MainViewModel, tx: Transaction, onDetail: () -> Unit, onReview: () -> Unit) {
     val airlineMissing = tx.type == TxType.TICKET && tx.currency == Currency.USD && tx.airline.isNullOrBlank()
+    val typeAccent = operationTypeColor(vm, tx.type)
     val accent = when {
         tx.changedAfterReview -> Warn
         tx.type == TxType.UNKNOWN || airlineMissing -> Mystery
         tx.reviewState == ReviewState.REVIEWED -> Good
         tx.reviewState == ReviewState.FOLLOW_UP -> Warn
-        else -> MaterialTheme.colorScheme.primary
+        else -> typeAccent
     }
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onDetail),
@@ -476,7 +477,7 @@ private fun TransactionCard(tx: Transaction, onDetail: () -> Unit, onReview: () 
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(formatMoney(tx.amount, tx.currency), fontWeight = FontWeight.SemiBold)
-                    if (tx.discount != 0.0) Text("Discount ${formatMoney(tx.discount, tx.currency)}", fontSize = 12.sp)
+                    if (tx.type == TxType.TICKET && tx.discount != 0.0) Text("Discount ${formatMoney(tx.discount, tx.currency)}", fontSize = 12.sp)
                 }
                 tx.warning?.let { Text(it, color = Warn, fontSize = 12.sp) }
             }
@@ -756,7 +757,7 @@ private fun PaymentsScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
         Text("المطابقة تقريبية والتأكيد النهائي يدوي.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(payments, key = { it.id }) { tx ->
-                TransactionCard(tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
+                TransactionCard(vm, tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
             }
         }
     }
