@@ -7,74 +7,80 @@ import com.eslam.check.data.TxType
 import java.util.Locale
 
 object BestChoiceParser {
-    private val dateRegex = Regex("\\b20\\d{2}-\\d{2}-\\d{2}\\b")
+    private val markerRegex = Regex(
+        "(Sale\\s+Tickets|Sale\\s+Visa|Visa\\s+Sale|TicketOperation\\s+(?:New\\s+)?(?:Change|Refund)|ID\\s+Voucher\\s+Receipt|Receipt\\s+Voucher(?:\\s+ID)?)",
+        RegexOption.IGNORE_CASE
+    )
+
     private val pnrRegex = Regex("PNR\\s*:\\s*([A-Z0-9]{4,10})", RegexOption.IGNORE_CASE)
     private val routeRegex = Regex("Route\\s*:\\s*([^\\n\\r]+)", RegexOption.IGNORE_CASE)
     private val discountRegex = Regex("Discount\\s*:\\s*([0-9,]+(?:\\.[0-9]+)?)", RegexOption.IGNORE_CASE)
-    private val operationBeforeDate = Regex("\\b(\\d{3,})\\s+(20\\d{2}-\\d{2}-\\d{2})\\b")
-    private val operationAfterDate = Regex("\\b(20\\d{2}-\\d{2}-\\d{2})\\s+(\\d{3,})\\b")
-    private val moneyRegex = Regex("(?:\\$|د\\.?ع|ع\\.?د)?\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)")
+    private val dateOpRegex = Regex("(20\\d{2}-\\d{2}-\\d{2})\\s+(\\d{3,})")
+    private val voucherOpRegex = Regex(
+        "(?:Receipt\\s+Voucher\\s+ID|ID\\s+Voucher\\s+Receipt|Receipt\\s+Voucher)\\s*(\\d+?)(?=20\\d{2}-\\d{2}-\\d{2}|\\s|$)",
+        RegexOption.IGNORE_CASE
+    )
+    private val simpleMoneyRegex = Regex("([0-9][0-9,]*(?:\\.[0-9]+)?)")
     private val passportRegex = Regex("\\b[A-Z]?[0-9]{7,10}[A-Z]?\\b", RegexOption.IGNORE_CASE)
 
     fun parse(text: String, forcedCurrency: Currency? = null): List<ParsedTransaction> {
-        val normalized = text.replace('\u00A0', ' ')
+        val normalized = text
+            .replace('\u00A0', ' ')
             .replace("\r", "\n")
-            .replace(Regex("\n{2,}"), "\n")
-        val lines = normalized.lines().map { it.trim() }.filter { it.isNotBlank() }
-        val blocks = mutableListOf<String>()
-        val current = mutableListOf<String>()
+            .replace(Regex("[ \\t]+"), " ")
+            .replace(Regex("\n{3,}"), "\n\n")
 
-        fun looksLikeTxMarker(line: String): Boolean =
-            line.contains("Sale Tickets", true) || line.contains("Visa Sale", true) || line.contains("Sale Visa", true) ||
-            line.contains("TicketOperation", true) || line.contains("Receipt Voucher", true) ||
-            line.contains("ID Voucher Receipt", true)
+        val markers = markerRegex.findAll(normalized).toList()
+        if (markers.isEmpty()) return emptyList()
 
-        fun isStart(line: String): Boolean =
-            looksLikeTxMarker(line) && dateRegex.containsMatchIn(line) && operationNumber(line) != null
+        val blocks = markers.mapIndexed { index, match ->
+            val lineStart = normalized.lastIndexOf('\n', match.range.first)
+                .let { if (it < 0) 0 else it + 1 }
 
-        for (line in lines) {
-            if (isStart(line)) {
-                if (current.isNotEmpty()) {
-                    blocks += current.joinToString("\n")
-                    current.clear()
-                }
-                current += line
-            } else if (current.isNotEmpty()) {
-                if (!line.contains("Page ", true) && !line.contains("best choise", true) && !line.contains("Helium", true)) {
-                    current += line
-                }
+            val nextStart = if (index + 1 < markers.size) {
+                normalized.lastIndexOf('\n', markers[index + 1].range.first)
+                    .let { if (it < 0) markers[index + 1].range.first else it + 1 }
+            } else {
+                normalized.length
             }
+
+            normalized.substring(lineStart, nextStart.coerceAtLeast(lineStart)).trim()
         }
-        if (current.isNotEmpty()) blocks += current.joinToString("\n")
 
         return blocks.mapNotNull { parseBlock(it, forcedCurrency) }
     }
 
     private fun parseBlock(block: String, forcedCurrency: Currency?): ParsedTransaction? {
+        val marker = markerRegex.find(block)?.value ?: return null
+
         val type = when {
-            block.contains("ID Voucher Receipt", true) || block.contains("Receipt Voucher", true) -> TxType.PAYMENT
-            block.contains("TicketOperation New Refund", true) || block.contains("TicketOperation Refund", true) -> TxType.REFUND
-            block.contains("TicketOperation New Change", true) || block.contains("TicketOperation Change", true) -> TxType.CHANGE
-            (block.contains("Visa Sale", true) || block.contains("Sale Visa", true)) -> if (isZeroVisaCancellation(block)) TxType.VOID else TxType.VISA
-            block.contains("Sale Tickets", true) -> {
+            marker.contains("Receipt Voucher", true) || marker.contains("ID Voucher Receipt", true) -> TxType.PAYMENT
+            marker.contains("Refund", true) -> TxType.REFUND
+            marker.contains("Change", true) -> TxType.CHANGE
+            marker.contains("Visa", true) -> if (isZeroVisaCancellation(block)) TxType.VOID else TxType.VISA
+            marker.contains("Sale Tickets", true) -> {
                 if (block.contains("Note", true) && block.contains("تغيير")) TxType.UNKNOWN else TxType.TICKET
             }
             else -> TxType.UNKNOWN
         }
+
         val currency = forcedCurrency ?: when {
             block.contains("$") -> Currency.USD
             block.contains("د.ع") || block.contains("ع.د") -> Currency.IQD
             else -> Currency.USD
         }
+
+        val operationNo = operationNumber(block, type)
+        if (operationNo.isNullOrBlank()) return null
+
         val pnr = pnrRegex.find(block)?.groupValues?.getOrNull(1)?.uppercase(Locale.ROOT)
-        val route = routeRegex.find(block)?.groupValues?.getOrNull(1)
-            ?.substringBefore("\\")?.substringBefore("-")?.trim()?.takeIf { it.isNotBlank() }
+        val route = routeRegex.find(block)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
         val discount = discountRegex.find(block)?.groupValues?.getOrNull(1)?.toNumber() ?: 0.0
-        val op = operationNumber(block.lineSequence().firstOrNull().orEmpty())
-        val amount = extractTransactionAmount(block, type, currency)
+        val amount = extractTransactionAmount(block, marker, type, currency)
         val passengers = extractPassengers(block, type)
+
         return ParsedTransaction(
-            operationNo = op,
+            operationNo = operationNo,
             currency = currency,
             type = type,
             pnr = pnr,
@@ -87,50 +93,100 @@ object BestChoiceParser {
         )
     }
 
-    private fun operationNumber(text: String): String? {
-        operationAfterDate.find(text)?.let { return it.groupValues[2] }
-        operationBeforeDate.find(text)?.let { return it.groupValues[1] }
-        val voucher = Regex("(?:ID\\s*)?Voucher(?:\\s+Receipt)?(?:\\s+ID)?\\s*(\\d{3,})", RegexOption.IGNORE_CASE).find(text)
-        return voucher?.groupValues?.getOrNull(1)
+    private fun operationNumber(block: String, type: TxType): String? {
+        if (type == TxType.PAYMENT) {
+            voucherOpRegex.find(block)?.groupValues?.getOrNull(1)?.let { return it }
+        }
+
+        return dateOpRegex.findAll(block)
+            .toList()
+            .lastOrNull()
+            ?.groupValues
+            ?.getOrNull(2)
     }
 
-    private fun extractTransactionAmount(block: String, type: TxType, currency: Currency): Double {
+    private fun extractTransactionAmount(
+        block: String,
+        marker: String,
+        type: TxType,
+        currency: Currency
+    ): Double {
         val firstLine = block.lineSequence().firstOrNull().orEmpty()
-        val marker = when (type) {
-            TxType.TICKET -> "Sale Tickets"
-            TxType.VISA, TxType.VOID -> if (firstLine.contains("Sale Visa", true)) "Sale Visa" else "Visa Sale"
-            TxType.CHANGE, TxType.REFUND -> "TicketOperation"
-            TxType.PAYMENT -> when {
-                firstLine.contains("ID Voucher Receipt", true) -> "ID Voucher Receipt"
-                else -> "Receipt Voucher"
+        val markerIndex = firstLine.indexOf(marker, ignoreCase = true)
+
+        if (type == TxType.PAYMENT && currency == Currency.IQD) {
+            val all = simpleMoneyRegex.findAll(firstLine)
+                .mapNotNull { it.groupValues.getOrNull(1)?.toNumberOrNull() }
+                .filter { it > 0 }
+                .toList()
+            if (all.isNotEmpty()) {
+                return all.last()
             }
-            else -> ""
         }
-        var tail = if (marker.isNotBlank()) firstLine.substringAfter(marker, "") else firstLine
-        if (type == TxType.PAYMENT) {
-            tail = tail.replaceFirst(Regex("^\\s*(?:ID\\s*)?\\d{3,}\\b"), " ")
+
+        if (markerIndex > 0) {
+            val prefix = firstLine.substring(0, markerIndex)
+            val amount = simpleMoneyRegex.findAll(prefix)
+                .toList()
+                .lastOrNull()
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toNumberOrNull()
+            if (amount != null) return amount
         }
-        val formattedMoney = Regex("(?:\\$|د\\.?ع|ع\\.?د)?\\s*([0-9]{1,3}(?:,[0-9]{3})+(?:\\.[0-9]+)?|[0-9]+\\.[0-9]{2})")
-        val first = formattedMoney.find(tail)?.groupValues?.getOrNull(1)?.toNumberOrNull()
-        if (first != null) return first
+
         if (type == TxType.VISA || type == TxType.VOID) {
-            if (Regex("\\$\\s*0(?:\\.0+)?").containsMatchIn(firstLine)) return 0.0
+            val passengerAmounts = extractVisaLineAmounts(block)
+            if (passengerAmounts.isNotEmpty()) return passengerAmounts.sum()
+            if (Regex("\\$\\s*0(?:\\.0+)?").containsMatchIn(block)) return 0.0
         }
-        return 0.0
+
+        val firstMonetary = simpleMoneyRegex.findAll(firstLine)
+            .mapNotNull { it.groupValues.getOrNull(1)?.toNumberOrNull() }
+            .firstOrNull { it >= 0.0 }
+
+        return firstMonetary ?: 0.0
+    }
+
+    private fun extractVisaLineAmounts(block: String): List<Double> {
+        val amounts = mutableListOf<Double>()
+        block.lines().forEach { line ->
+            if (line.contains("Visa", true) || line.contains("فيزا")) {
+                val parts = line.split("\\").map { it.trim() }.filter { it.isNotBlank() }
+                parts.forEach { part ->
+                    val value = Regex("(?:\\$|د\\.?ع|ع\\.?د)?\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)")
+                        .find(part)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toNumberOrNull()
+                    if (value != null && (part.contains("$") || part.contains("د.ع") || part.contains("ع.د"))) {
+                        amounts += value
+                    }
+                }
+            }
+        }
+        return amounts
     }
 
     private fun extractPassengers(block: String, type: TxType): List<ParsedPassenger> {
         val results = mutableListOf<ParsedPassenger>()
+
         if (type == TxType.TICKET) {
             block.lines().forEach { line ->
                 if (line.contains("Adult", true) || line.contains("Child", true) || line.contains("Infant", true)) {
                     val clean = line.replace("-.", "").trim()
                     val parts = clean.split("\\").map { it.trim() }.filter { it.isNotBlank() }
-                    val typeIdx = parts.indexOfFirst { it.equals("Adult", true) || it.equals("Child", true) || it.equals("Infant", true) }
+                    val typeIdx = parts.indexOfFirst {
+                        it.equals("Adult", true) || it.equals("Child", true) || it.equals("Infant", true)
+                    }
                     if (typeIdx >= 1) {
                         val name = parts[typeIdx - 1].removePrefix(".").trim()
-                        val amount = parts.getOrNull(typeIdx + 1)?.let { moneyRegex.find(it)?.groupValues?.getOrNull(1)?.toNumberOrNull() }
-                        if (name.isNotBlank()) results += ParsedPassenger(name = name, amount = amount)
+                        val amount = parts.getOrNull(typeIdx + 1)
+                            ?.let { simpleMoneyRegex.find(it)?.groupValues?.getOrNull(1)?.toNumberOrNull() }
+
+                        if (name.isNotBlank()) {
+                            results += ParsedPassenger(name = name, amount = amount)
+                        }
                     }
                 }
             }
@@ -138,30 +194,49 @@ object BestChoiceParser {
             block.lines().forEach { line ->
                 if (line.contains("Visa", true) || line.contains("فيزا")) {
                     val parts = line.split("\\").map { it.trim() }.filter { it.isNotBlank() }
-                    if (parts.size >= 2) {
+                    if (parts.isNotEmpty()) {
                         val possiblePassport = parts.firstNotNullOfOrNull { passportRegex.find(it)?.value }
                         val nameCandidate = parts
-                            .filterNot { it.contains("VISA", true) || it.contains("فيزا") }
-                            .firstOrNull { it.any(Char::isLetter) && passportRegex.find(it) == null }
-                        val amount = parts.asReversed().firstNotNullOfOrNull { moneyRegex.find(it)?.groupValues?.getOrNull(1)?.toNumberOrNull() }
-                        if (!nameCandidate.isNullOrBlank()) results += ParsedPassenger(nameCandidate, possiblePassport, amount)
+                            .filterNot {
+                                it.contains("VISA", true) ||
+                                    it.contains("فيزا") ||
+                                    passportRegex.find(it) != null
+                            }
+                            .firstOrNull { it.any(Char::isLetter) }
+
+                        val amount = parts.asReversed().firstNotNullOfOrNull {
+                            simpleMoneyRegex.find(it)?.groupValues?.getOrNull(1)?.toNumberOrNull()
+                        }
+
+                        if (!nameCandidate.isNullOrBlank()) {
+                            results += ParsedPassenger(nameCandidate, possiblePassport, amount)
+                        }
                     }
                 }
             }
         } else if (type == TxType.CHANGE || type == TxType.REFUND) {
-            val name = Regex("Name\\s*:\\s*([^\\n]+?)(?:E-TICKET|E\\s*-?TICKET|$)", RegexOption.IGNORE_CASE)
-                .find(block)?.groupValues?.getOrNull(1)?.trim()
+            val name = Regex(
+                "Name\\s*:\\s*([^\\n]+?)(?:E-TICKET|E\\s*-?TICKET|$)",
+                RegexOption.IGNORE_CASE
+            ).find(block)?.groupValues?.getOrNull(1)?.trim()
+
             if (!name.isNullOrBlank()) results += ParsedPassenger(name)
         }
+
         return results.distinctBy { it.name.lowercase() }
     }
 
     private fun isZeroVisaCancellation(block: String): Boolean {
-        if (!block.contains("Visa Sale", true) && !block.contains("Sale Visa", true)) return false
-        val nums = Regex("\\$\\s*0(?:\\.0+)?").findAll(block).count()
-        return nums > 0 || (block.contains("الغاء") || block.contains("إلغاء"))
+        if (!block.contains("Sale Visa", true) && !block.contains("Visa Sale", true)) return false
+
+        return Regex("\\$\\s*0(?:\\.0+)?").containsMatchIn(block) ||
+            block.contains("الغاء") ||
+            block.contains("إلغاء")
     }
 
-    private fun String.toNumber(): Double = replace(",", "").trim().toDoubleOrNull() ?: 0.0
-    private fun String.toNumberOrNull(): Double? = replace(",", "").replace("$", "").trim().toDoubleOrNull()
+    private fun String.toNumber(): Double =
+        replace(",", "").trim().toDoubleOrNull() ?: 0.0
+
+    private fun String.toNumberOrNull(): Double? =
+        replace(",", "").replace("$", "").trim().toDoubleOrNull()
 }
