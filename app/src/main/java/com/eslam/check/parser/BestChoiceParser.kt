@@ -209,7 +209,7 @@ object BestChoiceParser {
                         }
 
                         if (!nameCandidate.isNullOrBlank()) {
-                            results += ParsedPassenger(nameCandidate, possiblePassport, amount)
+                            results += ParsedPassenger(name = nameCandidate, amount = amount, passport = possiblePassport)
                         }
                     }
                 }
