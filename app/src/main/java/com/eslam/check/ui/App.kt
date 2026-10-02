@@ -2485,7 +2485,14 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
 }
 
 @Composable
-private fun PassengerAuditCard(vm: MainViewModel, tx: Transaction, detail: TxPassengerDetail, rule: CommissionRule?) {
+private fun PassengerAuditCard(
+    vm: MainViewModel,
+    tx: Transaction,
+    detail: TxPassengerDetail,
+    rule: CommissionRule?,
+    onOpenPassenger: (Passenger) -> Unit
+) {
+    val context = LocalContext.current
     var baseText by remember(detail.passenger.id, detail.baseFare) { mutableStateOf(detail.baseFare?.toString().orEmpty()) }
     val base = baseText.toDoubleOrNull()
     val taxes = if (detail.amount != null && base != null) detail.amount - base else null
@@ -2493,12 +2500,33 @@ private fun PassengerAuditCard(vm: MainViewModel, tx: Transaction, detail: TxPas
 
     Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(detail.passenger.name, fontWeight = FontWeight.Bold)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    detail.passenger.name,
+                    modifier = Modifier.weight(1f).clickable { onOpenPassenger(detail.passenger) },
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                IconButton(
+                    onClick = { copyToClipboard(context, "الاسم", detail.passenger.name) },
+                    modifier = Modifier.size(30.dp)
+                ) { Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp)) }
                 Text(detail.passengerType ?: "", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            detail.documentNo?.let { Text("Ticket: $it", fontSize = 12.sp) }
-            detail.amount?.let { Text("Total المصدر: ${formatMoney(it, tx.currency)}") }
+            detail.documentNo?.let { ticket ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Ticket: " + ticket,
+                        modifier = Modifier.weight(1f).clickable { copyToClipboard(context, "Ticket", ticket) },
+                        fontSize = 12.sp
+                    )
+                    IconButton(
+                        onClick = { copyToClipboard(context, "Ticket", ticket) },
+                        modifier = Modifier.size(30.dp)
+                    ) { Icon(Icons.Rounded.ContentCopy, "نسخ رقم التذكرة", modifier = Modifier.size(16.dp)) }
+                }
+            }
+            detail.amount?.let { Text("Total المصدر: " + formatMoney(it, tx.currency)) }
             OutlinedTextField(
                 value = baseText,
                 onValueChange = {
@@ -2510,8 +2538,8 @@ private fun PassengerAuditCard(vm: MainViewModel, tx: Transaction, detail: TxPas
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 singleLine = true
             )
-            taxes?.let { Text("Taxes المحسوبة: ${formatMoney(it, tx.currency)}") }
-            expected?.let { Text("عمولة هذا المسافر: ${formatMoney(it, tx.currency)}", color = MaterialTheme.colorScheme.primary) }
+            taxes?.let { Text("Taxes المحسوبة: " + formatMoney(it, tx.currency)) }
+            expected?.let { Text("عمولة هذا المسافر: " + formatMoney(it, tx.currency), color = MaterialTheme.colorScheme.primary) }
         }
     }
 }
