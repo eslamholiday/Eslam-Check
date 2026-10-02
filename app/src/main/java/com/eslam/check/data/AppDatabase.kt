@@ -499,6 +499,12 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             val passenger = findOrCreatePassenger(p.name, p.passport)
             linkPassenger(tx.id, passenger.id, p.amount, p.passengerType, p.documentNo, p.product, p.flags)
         }
+        audit(
+            "transaction",
+            tx.id,
+            "source_snapshot",
+            listOf(parsedWithId.documentId.orEmpty(), parsedWithId.snapshotId.orEmpty(), hash.take(12)).joinToString("|")
+        )
         return tx to (existing == null)
     }
 
