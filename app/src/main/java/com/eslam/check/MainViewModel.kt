@@ -172,6 +172,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun transactionsForPassenger(id: String): List<Transaction> = db.transactionsForPassenger(id)
     fun transactionsForResponsible(id: String): List<Transaction> = db.transactionsForResponsible(id)
     fun passengerFiles(id: String): List<PassengerFile> = db.passengerFiles(id)
+    fun passengerAliases(id: String): List<PassengerAlias> = db.passengerAliases(id)
+    fun mergedPassengers(id: String): List<Passenger> = db.mergedPassengers(id)
     fun auditEvents(entityType: String, entityId: String): List<AuditEvent> = db.auditEvents(entityType, entityId)
     fun airlineNames(): List<String> = db.airlineNames()
     fun ruleForTransaction(tx: Transaction): CommissionRule? = db.ruleForTransaction(tx)
@@ -264,6 +266,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun assignResponsibleForPnr(pnr: String, responsibleId: String) {
         viewModelScope.launch(Dispatchers.IO) {
             db.assignResponsibleForPnr(pnr, responsibleId)
+            refresh()
+        }
+    }
+
+    fun mergePassengers(primaryId: String, secondaryIds: Collection<String>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = db.mergePassengers(primaryId, secondaryIds)
+            _message.value = if (result != null) "تم دمج المسافرين في ملف واحد" else "تعذر دمج المسافرين"
+            refresh()
+        }
+    }
+
+    fun unmergePassenger(sourceId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = db.unmergePassenger(sourceId)
+            _message.value = if (result != null) "تم فك الدمج" else "تعذر فك الدمج"
             refresh()
         }
     }

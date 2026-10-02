@@ -8,7 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 4) {
+class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 5) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE transactions(
@@ -63,11 +63,27 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 phone TEXT,
                 responsible_id TEXT,
                 responsible_relation TEXT,
-                is_responsible INTEGER NOT NULL DEFAULT 0
+                is_responsible INTEGER NOT NULL DEFAULT 0,
+                merged_into_id TEXT
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX idx_passenger_name ON passengers(normalized_name)")
         db.execSQL("CREATE INDEX idx_passenger_passport ON passengers(passport)")
+        db.execSQL("CREATE INDEX idx_passenger_merged_into ON passengers(merged_into_id)")
+
+        db.execSQL("""
+            CREATE TABLE passenger_aliases(
+                id TEXT PRIMARY KEY,
+                passenger_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                value TEXT NOT NULL,
+                normalized_value TEXT NOT NULL,
+                source_passenger_id TEXT,
+                created_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_passenger_alias_lookup ON passenger_aliases(kind, normalized_value)")
+        db.execSQL("CREATE INDEX idx_passenger_alias_owner ON passenger_aliases(passenger_id)")
 
         db.execSQL("""
             CREATE TABLE passenger_files(
@@ -294,6 +310,31 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             putSettingIfMissing(db, "color_void", "#EB5757")
             putSettingIfMissing(db, "color_payment", "#56CCF2")
             putSettingIfMissing(db, "color_unknown", "#6A4C93")
+        }
+        if (oldVersion < 5) {
+            db.execSQL("ALTER TABLE passengers ADD COLUMN merged_into_id TEXT")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_passenger_merged_into ON passengers(merged_into_id)")
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS passenger_aliases(
+                    id TEXT PRIMARY KEY,
+                    passenger_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    normalized_value TEXT NOT NULL,
+                    source_passenger_id TEXT,
+                    created_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_passenger_alias_lookup ON passenger_aliases(kind, normalized_value)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_passenger_alias_owner ON passenger_aliases(passenger_id)")
+            db.rawQuery("SELECT id,name,passport,phone FROM passengers", null).use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getString(0)
+                    addAlias(db, id, "NAME", c.getString(1), id)
+                    if (!c.isNull(2)) addAlias(db, id, "PASSPORT", c.getString(2), id)
+                    if (!c.isNull(3)) addAlias(db, id, "PHONE", c.getString(3), id)
+                }
+            }
         }
     }
 
@@ -580,10 +621,12 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         val where = mutableListOf<String>()
         val args = mutableListOf<String>()
         if (search.isNotBlank()) {
-            where += "(pnr LIKE ? OR operation_no LIKE ? OR airline LIKE ? OR visa_country LIKE ? OR note LIKE ? OR id IN (SELECT tp.tx_id FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id WHERE p.normalized_name LIKE ? OR p.passport LIKE ? OR p.phone LIKE ? OR tp.document_no LIKE ?))"
+            where += "(pnr LIKE ? OR operation_no LIKE ? OR airline LIKE ? OR visa_country LIKE ? OR note LIKE ? OR id IN (SELECT tp.tx_id FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id WHERE p.normalized_name LIKE ? OR p.passport LIKE ? OR p.phone LIKE ? OR tp.document_no LIKE ? OR p.id IN (SELECT passenger_id FROM passenger_aliases WHERE normalized_value LIKE ? OR normalized_value LIKE ?)))"
             val q = "%${normalize(search)}%"
             val raw = "%${search.trim()}%"
-            args += listOf(raw, raw, raw, raw, raw, q, raw, raw, raw)
+            val aliasToken = normalizeAliasValue("PASSPORT", search)
+            val aliasRaw = if (aliasToken.isBlank()) "__NO_ALIAS_MATCH__" else "%$aliasToken%"
+            args += listOf(raw, raw, raw, raw, raw, q, raw, raw, raw, q, aliasRaw)
         }
         if (types.isNotEmpty()) {
             where += "type IN (${types.joinToString(",") { "?" }})"
@@ -605,28 +648,57 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun passengersFor(txId: String): List<Passenger> {
+        val out = linkedMapOf<String, Passenger>()
+        readableDatabase.rawQuery("""
+            SELECT p.* FROM passengers p
+            JOIN tx_passengers tp ON tp.passenger_id=p.id
+            WHERE tp.tx_id=?
+            ORDER BY p.name
+        """.trimIndent(), arrayOf(txId)).use { c ->
+            while (c.moveToNext()) {
+                val raw = c.toPassenger()
+                val canonical = passengerById(raw.id) ?: raw
+                out.putIfAbsent(canonical.id, canonical)
+            }
+        }
+        return out.values.toList()
+    }
+
+    fun passengerSuggestions(query: String, limit: Int = 100): List<Passenger> {
+        if (query.isBlank()) return emptyList()
+        val nameQuery = "%" + normalize(query) + "%"
+        val rawQuery = "%" + query.trim() + "%"
+        val aliasName = "%" + normalizeAliasValue("NAME", query) + "%"
+        val aliasToken = normalizeAliasValue("PASSPORT", query)
+        val aliasRaw = if (aliasToken.isBlank()) "__NO_ALIAS_MATCH__" else "%" + aliasToken + "%"
+        val ids = linkedSetOf<String>()
         val out = mutableListOf<Passenger>()
         readableDatabase.rawQuery("""
-            SELECT p.* FROM passengers p JOIN tx_passengers tp ON tp.passenger_id=p.id WHERE tp.tx_id=? ORDER BY p.name
-        """.trimIndent(), arrayOf(txId)).use { c ->
-            while (c.moveToNext()) out += c.toPassenger()
+            SELECT DISTINCT p.* FROM passengers p
+            LEFT JOIN passenger_aliases a ON a.passenger_id=p.id
+            WHERE p.merged_into_id IS NULL
+              AND (
+                p.normalized_name LIKE ? OR p.passport LIKE ? OR p.phone LIKE ?
+                OR (a.kind='NAME' AND a.normalized_value LIKE ?)
+                OR (a.kind IN ('PASSPORT','PHONE') AND a.normalized_value LIKE ?)
+              )
+            ORDER BY p.name
+            LIMIT ?
+        """.trimIndent(), arrayOf(nameQuery, rawQuery, rawQuery, aliasName, aliasRaw, limit.toString())).use { c ->
+            while (c.moveToNext()) {
+                val p = c.toPassenger()
+                if (ids.add(p.id)) out += p
+            }
         }
         return out
     }
 
-    fun passengerSuggestions(query: String, limit: Int = 8): List<Passenger> {
-        if (query.isBlank()) return emptyList()
+    fun allPassengers(limit: Int = 500): List<Passenger> {
         val out = mutableListOf<Passenger>()
         readableDatabase.rawQuery(
-            "SELECT * FROM passengers WHERE normalized_name LIKE ? OR passport LIKE ? OR phone LIKE ? ORDER BY name LIMIT ?",
-            arrayOf("%${normalize(query)}%", "%${query.trim()}%", "%${query.trim()}%", limit.toString())
-        ).use { c -> while (c.moveToNext()) out += c.toPassenger() }
-        return out
-    }
-
-    fun allPassengers(limit: Int = 200): List<Passenger> {
-        val out = mutableListOf<Passenger>()
-        readableDatabase.rawQuery("SELECT * FROM passengers ORDER BY name LIMIT ?", arrayOf(limit.toString())).use { c ->
+            "SELECT * FROM passengers WHERE merged_into_id IS NULL ORDER BY name LIMIT ?",
+            arrayOf(limit.toString())
+        ).use { c ->
             while (c.moveToNext()) out += c.toPassenger()
         }
         return out
@@ -634,24 +706,52 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
 
     fun findOrCreatePassenger(name: String, passport: String?): Passenger {
         val clean = name.trim().replace(Regex("\\s+"), " ")
-        val norm = normalize(clean)
-        val sql: String
-        val args: Array<String>
-        if (passport.isNullOrBlank()) {
-            sql = "SELECT * FROM passengers WHERE normalized_name=? LIMIT 1"
-            args = arrayOf(norm)
-        } else {
-            sql = "SELECT * FROM passengers WHERE normalized_name=? OR passport=? LIMIT 1"
-            args = arrayOf(norm, passport)
+        val normName = normalizeAliasValue("NAME", clean)
+        val normPassport = passport?.takeIf { it.isNotBlank() }?.let { normalizeAliasValue("PASSPORT", it) }
+
+        fun aliasOwner(kind: String, normalized: String): String? =
+            readableDatabase.rawQuery(
+                "SELECT passenger_id FROM passenger_aliases WHERE kind=? AND normalized_value=? ORDER BY created_at DESC LIMIT 1",
+                arrayOf(kind, normalized)
+            ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+
+        val candidateId = normPassport?.let { aliasOwner("PASSPORT", it) }
+            ?: aliasOwner("NAME", normName)
+            ?: readableDatabase.rawQuery(
+                if (passport.isNullOrBlank())
+                    "SELECT id FROM passengers WHERE normalized_name=? ORDER BY CASE WHEN merged_into_id IS NULL THEN 0 ELSE 1 END LIMIT 1"
+                else
+                    "SELECT id FROM passengers WHERE passport=? OR normalized_name=? ORDER BY CASE WHEN passport=? THEN 0 ELSE 1 END, CASE WHEN merged_into_id IS NULL THEN 0 ELSE 1 END LIMIT 1",
+                if (passport.isNullOrBlank()) arrayOf(normName) else arrayOf(passport, normName, passport)
+            ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+
+        if (candidateId != null) {
+            val canonicalId = resolveCanonicalPassengerId(candidateId)
+            val existing = passengerRawById(canonicalId)
+            if (existing != null) {
+                addAlias(writableDatabase, canonicalId, "NAME", clean, candidateId)
+                if (!passport.isNullOrBlank()) addAlias(writableDatabase, canonicalId, "PASSPORT", passport, candidateId)
+                if (existing.passport.isNullOrBlank() && !passport.isNullOrBlank()) {
+                    writableDatabase.update("passengers", ContentValues().apply { put("passport", passport) }, "id=?", arrayOf(canonicalId))
+                }
+                return passengerRawById(canonicalId) ?: existing
+            }
         }
-        readableDatabase.rawQuery(sql, args).use { c ->
-            if (c.moveToFirst()) return c.toPassenger()
-        }
+
         val p = Passenger(UUID.randomUUID().toString(), clean, passport)
         writableDatabase.insert("passengers", null, ContentValues().apply {
-            put("id", p.id); put("name", p.name); put("normalized_name", norm); put("passport", passport)
-            putNull("phone"); putNull("responsible_id"); putNull("responsible_relation"); put("is_responsible", 0)
+            put("id", p.id)
+            put("name", p.name)
+            put("normalized_name", normalize(clean))
+            put("passport", passport)
+            putNull("phone")
+            putNull("responsible_id")
+            putNull("responsible_relation")
+            put("is_responsible", 0)
+            putNull("merged_into_id")
         })
+        addAlias(writableDatabase, p.id, "NAME", clean, p.id)
+        if (!passport.isNullOrBlank()) addAlias(writableDatabase, p.id, "PASSPORT", passport, p.id)
         return p
     }
 
@@ -782,8 +882,197 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     private fun Cursor.toPassenger() = Passenger(
         id = s("id"), name = s("name"), passport = sn("passport"), phone = sn("phone"),
         responsibleId = sn("responsible_id"), responsibleRelation = sn("responsible_relation"),
-        isResponsible = i("is_responsible") == 1
+        isResponsible = i("is_responsible") == 1, mergedIntoId = sn("merged_into_id")
     )
+
+    private fun normalizeAliasValue(kind: String, value: String): String = when (kind.uppercase()) {
+        "PHONE" -> value.filter(Char::isDigit)
+        "PASSPORT" -> value.uppercase().replace(Regex("[^A-Z0-9]"), "")
+        else -> normalize(value)
+    }
+
+    private fun addAlias(
+        db: SQLiteDatabase,
+        passengerId: String,
+        kind: String,
+        value: String?,
+        sourcePassengerId: String? = null
+    ) {
+        val clean = value?.trim()?.takeIf { it.isNotBlank() } ?: return
+        val normalized = normalizeAliasValue(kind, clean)
+        if (normalized.isBlank()) return
+        val exists = db.rawQuery(
+            "SELECT 1 FROM passenger_aliases WHERE passenger_id=? AND kind=? AND normalized_value=? LIMIT 1",
+            arrayOf(passengerId, kind.uppercase(), normalized)
+        ).use { it.moveToFirst() }
+        if (exists) return
+        db.insert("passenger_aliases", null, ContentValues().apply {
+            put("id", UUID.randomUUID().toString())
+            put("passenger_id", passengerId)
+            put("kind", kind.uppercase())
+            put("value", clean)
+            put("normalized_value", normalized)
+            put("source_passenger_id", sourcePassengerId)
+            put("created_at", System.currentTimeMillis())
+        })
+    }
+
+    private fun passengerRawById(id: String): Passenger? {
+        readableDatabase.rawQuery("SELECT * FROM passengers WHERE id=? LIMIT 1", arrayOf(id)).use { c ->
+            return if (c.moveToFirst()) c.toPassenger() else null
+        }
+    }
+
+    private fun resolveCanonicalPassengerId(id: String): String {
+        var current = id
+        val visited = mutableSetOf<String>()
+        repeat(32) {
+            if (!visited.add(current)) return current
+            val next = readableDatabase.rawQuery(
+                "SELECT merged_into_id FROM passengers WHERE id=? LIMIT 1",
+                arrayOf(current)
+            ).use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getString(0) else null }
+            if (next.isNullOrBlank()) return current
+            current = next
+        }
+        return current
+    }
+
+    private fun mergedGroupIds(primaryId: String): List<String> {
+        val root = resolveCanonicalPassengerId(primaryId)
+        val out = linkedSetOf(root)
+        val queue = ArrayDeque<String>()
+        queue.add(root)
+        while (queue.isNotEmpty()) {
+            val parent = queue.removeFirst()
+            readableDatabase.rawQuery(
+                "SELECT id FROM passengers WHERE merged_into_id=?",
+                arrayOf(parent)
+            ).use { c ->
+                while (c.moveToNext()) {
+                    val child = c.getString(0)
+                    if (out.add(child)) queue.add(child)
+                }
+            }
+        }
+        return out.toList()
+    }
+
+    fun passengerById(id: String): Passenger? {
+        val rootId = resolveCanonicalPassengerId(id)
+        val raw = passengerRawById(rootId) ?: return null
+        val group = mergedGroupIds(rootId)
+        val responsible = group.any { passengerRawById(it)?.isResponsible == true }
+        val responsibleId = raw.responsibleId?.let { resolveCanonicalPassengerId(it) }
+        return raw.copy(
+            isResponsible = responsible,
+            responsibleId = responsibleId,
+            mergedIntoId = null
+        )
+    }
+
+    fun passengerAliases(passengerId: String): List<PassengerAlias> {
+        val ids = mergedGroupIds(passengerId)
+        if (ids.isEmpty()) return emptyList()
+        val placeholders = ids.joinToString(",") { "?" }
+        val out = mutableListOf<PassengerAlias>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM passenger_aliases WHERE passenger_id IN ($placeholders) ORDER BY kind,value",
+            ids.toTypedArray()
+        ).use { c ->
+            while (c.moveToNext()) {
+                out += PassengerAlias(
+                    id = c.s("id"),
+                    passengerId = c.s("passenger_id"),
+                    kind = c.s("kind"),
+                    value = c.s("value"),
+                    normalizedValue = c.s("normalized_value"),
+                    sourcePassengerId = c.sn("source_passenger_id"),
+                    createdAt = c.l("created_at")
+                )
+            }
+        }
+        return out.distinctBy { it.kind + "|" + it.normalizedValue }
+    }
+
+    fun mergedPassengers(passengerId: String): List<Passenger> =
+        mergedGroupIds(passengerId).drop(1).mapNotNull(::passengerRawById).sortedBy { it.name }
+
+    fun mergePassengers(primaryId: String, secondaryIds: Collection<String>): Passenger? {
+        val primary = passengerById(primaryId) ?: return null
+        val targets = secondaryIds
+            .map(::resolveCanonicalPassengerId)
+            .filter { it != primary.id }
+            .distinct()
+        if (targets.isEmpty()) return primary
+
+        writableDatabase.beginTransaction()
+        try {
+            targets.forEach { sourceId ->
+                val source = passengerRawById(sourceId) ?: return@forEach
+
+                addAlias(writableDatabase, primary.id, "NAME", source.name, source.id)
+                addAlias(writableDatabase, primary.id, "PASSPORT", source.passport, source.id)
+                addAlias(writableDatabase, primary.id, "PHONE", source.phone, source.id)
+                addAlias(writableDatabase, source.id, "NAME", primary.name, primary.id)
+
+                readableDatabase.rawQuery(
+                    "SELECT kind,value FROM passenger_aliases WHERE passenger_id=?",
+                    arrayOf(source.id)
+                ).use { c ->
+                    while (c.moveToNext()) addAlias(writableDatabase, primary.id, c.getString(0), c.getString(1), source.id)
+                }
+
+                val currentPrimary = passengerRawById(primary.id) ?: primary
+                writableDatabase.update("passengers", ContentValues().apply {
+                    if (currentPrimary.passport.isNullOrBlank() && !source.passport.isNullOrBlank()) put("passport", source.passport)
+                    if (currentPrimary.phone.isNullOrBlank() && !source.phone.isNullOrBlank()) put("phone", source.phone)
+                    if (currentPrimary.responsibleId.isNullOrBlank() && !source.responsibleId.isNullOrBlank()) {
+                        put("responsible_id", resolveCanonicalPassengerId(source.responsibleId))
+                        put("responsible_relation", source.responsibleRelation)
+                    }
+                    put("is_responsible", if (currentPrimary.isResponsible || source.isResponsible) 1 else 0)
+                }, "id=?", arrayOf(primary.id))
+
+                writableDatabase.update("passengers", ContentValues().apply {
+                    put("merged_into_id", primary.id)
+                }, "id=?", arrayOf(source.id))
+
+                audit("passenger", primary.id, "merge_passenger", source.id + "|" + source.name)
+                audit("passenger", source.id, "merged_into", primary.id + "|" + primary.name)
+            }
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        return passengerById(primary.id)
+    }
+
+    fun unmergePassenger(sourceId: String): Passenger? {
+        val source = passengerRawById(sourceId) ?: return null
+        val primaryId = source.mergedIntoId ?: return source
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.update("passengers", ContentValues().apply { putNull("merged_into_id") }, "id=?", arrayOf(sourceId))
+            val rootPrimaryId = resolveCanonicalPassengerId(primaryId)
+            writableDatabase.delete(
+                "passenger_aliases",
+                "passenger_id=? AND source_passenger_id=?",
+                arrayOf(rootPrimaryId, sourceId)
+            )
+            writableDatabase.delete(
+                "passenger_aliases",
+                "passenger_id=? AND source_passenger_id=?",
+                arrayOf(sourceId, rootPrimaryId)
+            )
+            audit("passenger", rootPrimaryId, "unmerge_passenger", sourceId + "|" + source.name)
+            audit("passenger", sourceId, "unmerged_from", primaryId)
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        return passengerRawById(sourceId)
+    }
 
     fun txPassengerDetails(txId: String): List<TxPassengerDetail> {
         val out = mutableListOf<TxPassengerDetail>()
@@ -794,8 +1083,9 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             WHERE tp.tx_id=? ORDER BY p.name
         """.trimIndent(), arrayOf(txId)).use { c ->
             while (c.moveToNext()) {
+                val raw = c.toPassenger()
                 out += TxPassengerDetail(
-                    passenger = c.toPassenger(),
+                    passenger = passengerById(raw.id) ?: raw,
                     amount = c.dn("tp_amount"),
                     baseFare = c.dn("tp_base_fare"),
                     passengerType = c.sn("tp_type"),
@@ -809,43 +1099,70 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun setPassengerBaseFare(txId: String, passengerId: String, baseFare: Double?) {
+        val ids = mergedGroupIds(passengerId)
+        val placeholders = ids.joinToString(",") { "?" }
+        val args = mutableListOf<String>()
+        args += txId
+        args += ids
         writableDatabase.update("tx_passengers", ContentValues().apply {
             if (baseFare == null) putNull("base_fare") else put("base_fare", baseFare)
-        }, "tx_id=? AND passenger_id=?", arrayOf(txId, passengerId))
-        audit("tx_passenger", "$txId/$passengerId", "base_fare", baseFare?.toString())
+        }, "tx_id=? AND passenger_id IN ($placeholders)", args.toTypedArray())
+        audit("tx_passenger", txId + "/" + resolveCanonicalPassengerId(passengerId), "base_fare", baseFare?.toString())
     }
 
     fun updatePassenger(person: Passenger) {
+        val canonicalId = resolveCanonicalPassengerId(person.id)
+        val old = passengerRawById(canonicalId) ?: return
+        addAlias(writableDatabase, canonicalId, "NAME", old.name, canonicalId)
+        addAlias(writableDatabase, canonicalId, "PASSPORT", old.passport, canonicalId)
+        addAlias(writableDatabase, canonicalId, "PHONE", old.phone, canonicalId)
+
+        val responsibleId = person.responsibleId?.let(::resolveCanonicalPassengerId)
         writableDatabase.update("passengers", ContentValues().apply {
-            put("name", person.name.trim()); put("normalized_name", normalize(person.name)); put("passport", person.passport)
-            put("phone", person.phone); put("responsible_id", person.responsibleId); put("responsible_relation", person.responsibleRelation)
+            put("name", person.name.trim())
+            put("normalized_name", normalize(person.name))
+            put("passport", person.passport)
+            put("phone", person.phone)
+            put("responsible_id", responsibleId)
+            put("responsible_relation", person.responsibleRelation)
             put("is_responsible", if (person.isResponsible) 1 else 0)
-        }, "id=?", arrayOf(person.id))
-        audit("passenger", person.id, "edit", person.name)
+        }, "id=?", arrayOf(canonicalId))
+
+        addAlias(writableDatabase, canonicalId, "NAME", person.name, canonicalId)
+        addAlias(writableDatabase, canonicalId, "PASSPORT", person.passport, canonicalId)
+        addAlias(writableDatabase, canonicalId, "PHONE", person.phone, canonicalId)
+        audit("passenger", canonicalId, "edit", person.name)
     }
 
     fun assignResponsible(passengerId: String, responsibleId: String?, relation: String? = null) {
+        val canonicalPassenger = resolveCanonicalPassengerId(passengerId)
+        val canonicalResponsible = responsibleId?.let(::resolveCanonicalPassengerId)
         writableDatabase.update("passengers", ContentValues().apply {
-            put("responsible_id", responsibleId); put("responsible_relation", relation)
-        }, "id=?", arrayOf(passengerId))
-        if (responsibleId != null) {
-            writableDatabase.update("passengers", ContentValues().apply { put("is_responsible", 1) }, "id=?", arrayOf(responsibleId))
+            put("responsible_id", canonicalResponsible)
+            put("responsible_relation", relation)
+        }, "id=?", arrayOf(canonicalPassenger))
+        if (canonicalResponsible != null) {
+            writableDatabase.update("passengers", ContentValues().apply { put("is_responsible", 1) }, "id=?", arrayOf(canonicalResponsible))
         }
-        audit("passenger", passengerId, "assign_responsible", responsibleId)
+        audit("passenger", canonicalPassenger, "assign_responsible", canonicalResponsible)
     }
 
     fun dependentsOf(responsibleId: String): List<Passenger> {
-        val out = mutableListOf<Passenger>()
-        readableDatabase.rawQuery("SELECT * FROM passengers WHERE responsible_id=? ORDER BY name", arrayOf(responsibleId)).use { c ->
-            while (c.moveToNext()) out += c.toPassenger()
+        val responsibleGroup = mergedGroupIds(responsibleId)
+        if (responsibleGroup.isEmpty()) return emptyList()
+        val placeholders = responsibleGroup.joinToString(",") { "?" }
+        val out = linkedMapOf<String, Passenger>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM passengers WHERE responsible_id IN ($placeholders) AND merged_into_id IS NULL ORDER BY name",
+            responsibleGroup.toTypedArray()
+        ).use { c ->
+            while (c.moveToNext()) {
+                val p = c.toPassenger()
+                val canonical = passengerById(p.id) ?: p
+                out.putIfAbsent(canonical.id, canonical)
+            }
         }
-        return out
-    }
-
-    fun passengerById(id: String): Passenger? {
-        readableDatabase.rawQuery("SELECT * FROM passengers WHERE id=? LIMIT 1", arrayOf(id)).use { c ->
-            return if (c.moveToFirst()) c.toPassenger() else null
-        }
+        return out.values.toList()
     }
 
     fun setAirlineForTransaction(txId: String, airline: String?, learnPrefix: Boolean = true) {
@@ -976,25 +1293,30 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun transactionsForPassenger(passengerId: String): List<Transaction> {
-        val out = mutableListOf<Transaction>()
-        readableDatabase.rawQuery("""
-            SELECT t.* FROM transactions t
-            JOIN tx_passengers tp ON tp.tx_id=t.id
-            WHERE tp.passenger_id=?
-            ORDER BY COALESCE(t.transaction_date,'') DESC, t.imported_at DESC
-        """.trimIndent(), arrayOf(passengerId)).use { c -> while (c.moveToNext()) out += c.toTransaction() }
-        return out
-    }
-
-    fun transactionsForResponsible(responsibleId: String): List<Transaction> {
+        val ids = mergedGroupIds(passengerId)
+        if (ids.isEmpty()) return emptyList()
+        val placeholders = ids.joinToString(",") { "?" }
         val out = mutableListOf<Transaction>()
         readableDatabase.rawQuery("""
             SELECT DISTINCT t.* FROM transactions t
             JOIN tx_passengers tp ON tp.tx_id=t.id
-            JOIN passengers p ON p.id=tp.passenger_id
-            WHERE p.responsible_id=?
+            WHERE tp.passenger_id IN ($placeholders)
             ORDER BY COALESCE(t.transaction_date,'') DESC, t.imported_at DESC
-        """.trimIndent(), arrayOf(responsibleId)).use { c -> while (c.moveToNext()) out += c.toTransaction() }
+        """.trimIndent(), ids.toTypedArray()).use { c -> while (c.moveToNext()) out += c.toTransaction() }
+        return out
+    }
+
+    fun transactionsForResponsible(responsibleId: String): List<Transaction> {
+        val dependentIds = dependentsOf(responsibleId).flatMap { mergedGroupIds(it.id) }.distinct()
+        if (dependentIds.isEmpty()) return emptyList()
+        val placeholders = dependentIds.joinToString(",") { "?" }
+        val out = mutableListOf<Transaction>()
+        readableDatabase.rawQuery("""
+            SELECT DISTINCT t.* FROM transactions t
+            JOIN tx_passengers tp ON tp.tx_id=t.id
+            WHERE tp.passenger_id IN ($placeholders)
+            ORDER BY COALESCE(t.transaction_date,'') DESC, t.imported_at DESC
+        """.trimIndent(), dependentIds.toTypedArray()).use { c -> while (c.moveToNext()) out += c.toTransaction() }
         return out
     }
 
@@ -1010,10 +1332,13 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun passengerFiles(passengerId: String): List<PassengerFile> {
+        val ids = mergedGroupIds(passengerId)
+        if (ids.isEmpty()) return emptyList()
+        val placeholders = ids.joinToString(",") { "?" }
         val out = mutableListOf<PassengerFile>()
         readableDatabase.rawQuery(
-            "SELECT * FROM passenger_files WHERE passenger_id=? ORDER BY is_primary DESC, created_at DESC",
-            arrayOf(passengerId)
+            "SELECT * FROM passenger_files WHERE passenger_id IN ($placeholders) ORDER BY is_primary DESC, created_at DESC",
+            ids.toTypedArray()
         ).use { c ->
             while (c.moveToNext()) out += PassengerFile(
                 id = c.s("id"), passengerId = c.s("passenger_id"), uri = c.s("uri"),
@@ -1025,13 +1350,14 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun addPassengerFile(passengerId: String, uri: String, mimeType: String?, displayName: String?): PassengerFile {
-        val first = passengerFiles(passengerId).isEmpty()
-        val item = PassengerFile(UUID.randomUUID().toString(), passengerId, uri, mimeType, displayName, first)
+        val ownerId = resolveCanonicalPassengerId(passengerId)
+        val first = passengerFiles(ownerId).isEmpty()
+        val item = PassengerFile(UUID.randomUUID().toString(), ownerId, uri, mimeType, displayName, first)
         writableDatabase.insert("passenger_files", null, ContentValues().apply {
-            put("id", item.id); put("passenger_id", passengerId); put("uri", uri); put("mime_type", mimeType)
+            put("id", item.id); put("passenger_id", ownerId); put("uri", uri); put("mime_type", mimeType)
             put("display_name", displayName); put("is_primary", if (item.isPrimary) 1 else 0); put("created_at", item.createdAt)
         })
-        audit("passenger", passengerId, "add_passport_file", displayName ?: uri)
+        audit("passenger", ownerId, "add_passport_file", displayName ?: uri)
         return item
     }
 
@@ -1043,13 +1369,16 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun setPrimaryPassengerFile(passengerId: String, id: String) {
+        val ownerId = resolveCanonicalPassengerId(passengerId)
+        val ids = mergedGroupIds(ownerId)
+        val placeholders = ids.joinToString(",") { "?" }
         writableDatabase.beginTransaction()
         try {
-            writableDatabase.update("passenger_files", ContentValues().apply { put("is_primary", 0) }, "passenger_id=?", arrayOf(passengerId))
+            writableDatabase.update("passenger_files", ContentValues().apply { put("is_primary", 0) }, "passenger_id IN ($placeholders)", ids.toTypedArray())
             writableDatabase.update("passenger_files", ContentValues().apply { put("is_primary", 1) }, "id=?", arrayOf(id))
             writableDatabase.setTransactionSuccessful()
         } finally { writableDatabase.endTransaction() }
-        audit("passenger", passengerId, "primary_passport_file", id)
+        audit("passenger", ownerId, "primary_passport_file", id)
     }
 
     fun auditEvents(entityType: String, entityId: String, limit: Int = 100): List<AuditEvent> {
@@ -1114,6 +1443,19 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     private fun Cursor.l(col: String) = getLong(getColumnIndexOrThrow(col))
     private fun Cursor.ln(col: String): Long? = getColumnIndexOrThrow(col).let { if (isNull(it)) null else getLong(it) }
 
+    private fun sourcePassengerNamesFor(txId: String): List<String> {
+        val out = mutableListOf<String>()
+        readableDatabase.rawQuery("""
+            SELECT p.name FROM passengers p
+            JOIN tx_passengers tp ON tp.passenger_id=p.id
+            WHERE tp.tx_id=?
+            ORDER BY p.name
+        """.trimIndent(), arrayOf(txId)).use { c ->
+            while (c.moveToNext()) out += normalize(c.getString(0))
+        }
+        return out.sorted()
+    }
+
     private fun hasMaterialChange(existing: Transaction, parsed: ParsedTransaction): Boolean {
         fun norm(v: String?) = v.orEmpty().trim().uppercase()
         if (existing.currency != parsed.currency) return true
@@ -1124,7 +1466,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         if (norm(existing.pnr) != norm(parsed.pnr) && existing.pnr != null && parsed.pnr != null) return true
         if (norm(existing.route) != norm(parsed.route) && existing.route != null && parsed.route != null) return true
         if (parsed.passengers.isNotEmpty()) {
-            val existingNames = passengersFor(existing.id).map { normalize(it.name) }.sorted()
+            val existingNames = sourcePassengerNamesFor(existing.id)
             val parsedNames = parsed.passengers.map { normalize(it.name) }.sorted()
             if (existingNames.isNotEmpty() && existingNames != parsedNames) return true
         }

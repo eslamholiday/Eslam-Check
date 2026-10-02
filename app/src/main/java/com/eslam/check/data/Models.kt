@@ -58,7 +58,18 @@ data class Passenger(
     val phone: String? = null,
     val responsibleId: String? = null,
     val responsibleRelation: String? = null,
-    val isResponsible: Boolean = false
+    val isResponsible: Boolean = false,
+    val mergedIntoId: String? = null
+)
+
+data class PassengerAlias(
+    val id: String,
+    val passengerId: String,
+    val kind: String,
+    val value: String,
+    val normalizedValue: String,
+    val sourcePassengerId: String? = null,
+    val createdAt: Long = System.currentTimeMillis()
 )
 
 data class PassengerFile(
