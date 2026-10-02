@@ -1208,8 +1208,10 @@ private fun ReviewSettings(vm: MainViewModel, onBack: () -> Unit) {
 @Composable
 private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
     val rules by vm.rules.collectAsState()
+    val airlines by vm.airlines.collectAsState()
     var editing by remember { mutableStateOf<CommissionRule?>(null) }
     var adding by remember { mutableStateOf(false) }
+    var catalogOpen by remember { mutableStateOf(false) }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -1219,18 +1221,25 @@ private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
         item { SettingsHeader("التذاكر والعمولات", onBack) }
         item {
             SettingsInfoCard(
-                "قاعدة الحساب",
-                "النسبة المئوية دائمًا على Base Fare لكل مسافر ثم تجمع. الرسم الثابت لكل مسافر. القواعد التاريخية لا تعيد حساب العمليات المراجعة."
+                "نظام الخطوط",
+                "شركة الطيران تختار من قاعدة بيانات الخطوط ولا تكتب يدويًا. يمكن لكل خط امتلاك عدة قواعد حسب التاريخ أو الاتجاه."
             )
         }
         item {
-            Button(onClick = { adding = true }, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Rounded.Add, null)
-                Spacer(Modifier.width(6.dp))
-                Text("إضافة شركة / قاعدة")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { adding = true }, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Rounded.Add, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("قاعدة عمولة")
+                }
+                OutlinedButton(onClick = { catalogOpen = true }, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Rounded.Flight, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("شركات الطيران")
+                }
             }
         }
-        items(rules, key = { it.id }) { rule ->
+        items(rules.sortedWith(compareBy<CommissionRule> { it.airline }.thenByDescending { it.effectiveFrom.orEmpty() }), key = { it.id }) { rule ->
             Surface(
                 modifier = Modifier.fillMaxWidth().clickable { editing = rule },
                 shape = RoundedCornerShape(14.dp),
@@ -1242,6 +1251,8 @@ private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
                         Icon(Icons.Rounded.Edit, null, tint = MaterialTheme.colorScheme.primary)
                     }
                     Text(ruleLabel(rule), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (!rule.effectiveFrom.isNullOrBlank()) Text("سارية من: " + rule.effectiveFrom, fontSize = 12.sp)
+                    if (rule.direction != "ANY") Text("الاتجاه: " + if (rule.direction == "REVERSE") "عكسي" else "طبيعي", fontSize = 12.sp)
                     rule.note?.takeIf { it.isNotBlank() }?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
             }
@@ -1249,41 +1260,46 @@ private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
     }
 
     editing?.let { rule ->
-        CommissionRuleDialog(vm, rule, onDismiss = { editing = null })
+        CommissionRuleDialog(vm, rule, airlines, onDismiss = { editing = null })
     }
     if (adding) {
         CommissionRuleDialog(
-            vm,
-            CommissionRule(
-                id = "new",
-                airline = "",
-                kind = RuleKind.PRIVATE_MANUAL,
-                value = 0.0
-            ),
+            vm = vm,
+            initial = CommissionRule(id = "new", airline = airlines.firstOrNull()?.name.orEmpty(), kind = RuleKind.PRIVATE_MANUAL, value = 0.0),
+            airlines = airlines,
             onDismiss = { adding = false }
         )
     }
+    if (catalogOpen) AirlineCatalogDialog(vm, airlines) { catalogOpen = false }
 }
 
 @Composable
-private fun CommissionRuleDialog(vm: MainViewModel, initial: CommissionRule, onDismiss: () -> Unit) {
+private fun CommissionRuleDialog(
+    vm: MainViewModel,
+    initial: CommissionRule,
+    airlines: List<AirlineInfo>,
+    onDismiss: () -> Unit
+) {
     var airline by remember(initial.id) { mutableStateOf(initial.airline) }
+    var airlinePicker by remember { mutableStateOf(false) }
     var kind by remember(initial.id) { mutableStateOf(initial.kind) }
     var value by remember(initial.id) { mutableStateOf(if (initial.value == 0.0) "" else initial.value.toString()) }
     var roundTrip by remember(initial.id) { mutableStateOf(initial.roundTripValue?.toString().orEmpty()) }
     var effectiveFrom by remember(initial.id) { mutableStateOf(initial.effectiveFrom.orEmpty()) }
+    var direction by remember(initial.id) { mutableStateOf(initial.direction) }
     var note by remember(initial.id) { mutableStateOf(initial.note.orEmpty()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (initial.id == "new") "إضافة قاعدة عمولة" else "تعديل قاعدة العمولة") },
         text = {
-            LazyColumn(Modifier.heightIn(max = 560.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyColumn(Modifier.heightIn(max = 600.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
-                    OutlinedTextField(
-                        airline, { airline = it }, Modifier.fillMaxWidth(),
-                        label = { Text("شركة الطيران") }, singleLine = true
-                    )
+                    OutlinedButton(onClick = { airlinePicker = true }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Rounded.Flight, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (airline.isBlank()) "اختر شركة الطيران" else airline)
+                    }
                 }
                 item {
                     Text("نوع القاعدة", fontWeight = FontWeight.Bold)
@@ -1302,7 +1318,7 @@ private fun CommissionRuleDialog(vm: MainViewModel, initial: CommissionRule, onD
                     item {
                         OutlinedTextField(
                             value, { value = it }, Modifier.fillMaxWidth(),
-                            label = { Text(if (kind == RuleKind.PERCENT_BASE) "النسبة %" else "قيمة الرسم لكل مسافر") },
+                            label = { Text(if (kind == RuleKind.PERCENT_BASE) "النسبة %" else "القيمة لكل مسافر") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                             singleLine = true
                         )
@@ -1316,6 +1332,14 @@ private fun CommissionRuleDialog(vm: MainViewModel, initial: CommissionRule, onD
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                             singleLine = true
                         )
+                    }
+                }
+                item {
+                    Text("الاتجاه", fontWeight = FontWeight.Bold)
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("ANY" to "الكل", "NORMAL" to "طبيعي", "REVERSE" to "عكسي").forEach { (key, label) ->
+                            FilterChip(selected = direction == key, onClick = { direction = key }, label = { Text(label) })
+                        }
                     }
                 }
                 item {
@@ -1340,13 +1364,125 @@ private fun CommissionRuleDialog(vm: MainViewModel, initial: CommissionRule, onD
                         value = value.toDoubleOrNull() ?: 0.0,
                         roundTripValue = roundTrip.toDoubleOrNull(),
                         note = note.ifBlank { null },
-                        effectiveFrom = effectiveFrom.ifBlank { null }
+                        effectiveFrom = effectiveFrom.ifBlank { null },
+                        direction = direction,
+                        ruleId = initial.id.takeUnless { it == "new" }
                     )
                     onDismiss()
                 }
             ) { Text("حفظ") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+    )
+
+    if (airlinePicker) {
+        AirlineSelectionDialog(
+            airlines = airlines,
+            selected = airline,
+            allowUnknown = false,
+            onDismiss = { airlinePicker = false },
+            onSelect = {
+                airline = it?.name.orEmpty()
+                airlinePicker = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun AirlineCatalogDialog(vm: MainViewModel, airlines: List<AirlineInfo>, onDismiss: () -> Unit) {
+    var adding by remember { mutableStateOf(false) }
+    var code by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("شركات الطيران") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                item {
+                    Button(onClick = { adding = !adding }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Rounded.Add, null)
+                        Spacer(Modifier.width(5.dp))
+                        Text("إضافة شركة طيران")
+                    }
+                }
+                if (adding) {
+                    item {
+                        OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("اسم الشركة") })
+                    }
+                    item {
+                        OutlinedTextField(code, { code = it.uppercase() }, Modifier.fillMaxWidth(), label = { Text("كود مختصر - اختياري") })
+                    }
+                    item {
+                        Button(
+                            enabled = name.isNotBlank(),
+                            onClick = {
+                                vm.addAirline(code, name)
+                                name = ""
+                                code = ""
+                                adding = false
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("حفظ الشركة") }
+                    }
+                }
+                items(airlines, key = { it.id }) { airline ->
+                    Surface(shape = RoundedCornerShape(12.dp), tonalElevation = 1.dp) {
+                        Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+                                Text(airline.code, modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp), fontWeight = FontWeight.Bold)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text(airline.name, Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("تم") } }
+    )
+}
+
+@Composable
+private fun AirlineSelectionDialog(
+    airlines: List<AirlineInfo>,
+    selected: String?,
+    allowUnknown: Boolean = true,
+    onDismiss: () -> Unit,
+    onSelect: (AirlineInfo?) -> Unit
+) {
+    var search by remember { mutableStateOf("") }
+    val visible = airlines.filter { search.isBlank() || it.name.contains(search, true) || it.code.contains(search, true) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("اختيار شركة الطيران") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    search, { search = it }, Modifier.fillMaxWidth(),
+                    label = { Text("بحث") }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, singleLine = true
+                )
+                LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    if (allowUnknown) {
+                        item {
+                            TextButton(onClick = { onSelect(null) }, modifier = Modifier.fillMaxWidth()) {
+                                Text("مبهم / غير محدد")
+                            }
+                        }
+                    }
+                    items(visible, key = { it.id }) { a ->
+                        TextButton(onClick = { onSelect(a) }, modifier = Modifier.fillMaxWidth()) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(a.name, fontWeight = if (a.name.equals(selected, true)) FontWeight.Bold else FontWeight.Normal)
+                                Text(a.code, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {}
     )
 }
 
