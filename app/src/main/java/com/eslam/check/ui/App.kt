@@ -491,7 +491,7 @@ private fun TransactionCard(vm: MainViewModel, tx: Transaction, onDetail: () -> 
 }
 
 @Composable
-private fun PassengersScreen(vm: MainViewModel) {
+private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
     val passengers by vm.passengers.collectAsState()
     var search by remember { mutableStateOf("") }
     var category by remember { mutableStateOf(PassengerCategory.ALL) }
@@ -516,10 +516,10 @@ private fun PassengersScreen(vm: MainViewModel) {
 
     Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("المسافرون", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Text("المسؤول يبقى مسافرًا بنفس الـID ويمكن ربط مسافرين تابعين له.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        Text("كل اسم ملف مستقل: عملياته، المسؤول، التابعون، واتساب وملفات الجواز.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
         OutlinedTextField(
             search, { search = it }, Modifier.fillMaxWidth(),
-            label = { Text("بحث بالاسم / الجواز / الهاتف / ID") },
+            label = { Text("بحث بالاسم / الهاتف / الجواز الداخلي / ID") },
             leadingIcon = { Icon(Icons.Rounded.Search, null) },
             singleLine = true
         )
@@ -552,26 +552,19 @@ private fun PassengersScreen(vm: MainViewModel) {
                         }
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(p.name, fontWeight = FontWeight.Bold)
-                                AssistChip(
-                                    onClick = {},
-                                    label = {
-                                        Text(
-                                            when {
-                                                p.isResponsible -> "مسؤول"
-                                                p.responsibleId != null -> "تابع"
-                                                else -> "مستقل"
-                                            },
-                                            fontSize = 10.sp
-                                        )
-                                    }
-                                )
-                            }
-                            Text("ID: ${p.id.take(8)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            p.passport?.let { Text("جواز: $it", fontSize = 12.sp) }
+                            Text(p.name, fontWeight = FontWeight.Bold)
+                            Text(
+                                when {
+                                    p.isResponsible -> "مسؤول • " + vm.dependentsOf(p.id).size + " تابع"
+                                    p.responsibleId != null -> "تابع"
+                                    else -> "مستقل"
+                                },
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            p.phone?.takeIf { it.isNotBlank() }?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                             p.responsibleId?.let { rid ->
-                                vm.passengerById(rid)?.let { Text("المسؤول: ${it.name}", fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary) }
+                                vm.passengerById(rid)?.let { Text("المسؤول: " + it.name, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary) }
                             }
                         }
                         Icon(Icons.Rounded.ChevronLeft, null)
@@ -582,7 +575,19 @@ private fun PassengersScreen(vm: MainViewModel) {
     }
 
     selected?.let { p ->
-        PassengerDetailDialog(vm, p, passengers, onDismiss = { selected = null })
+        key(p.id) {
+            PassengerDetailDialog(
+                vm = vm,
+                passenger = p,
+                allPassengers = passengers,
+                onDismiss = { selected = null },
+                onOpenTransaction = {
+                    selected = null
+                    onDetail(it)
+                },
+                onOpenPassenger = { selected = it }
+            )
+        }
     }
 }
 
@@ -591,18 +596,71 @@ private fun PassengerDetailDialog(
     vm: MainViewModel,
     passenger: Passenger,
     allPassengers: List<Passenger>,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onOpenTransaction: (String) -> Unit = {},
+    onOpenPassenger: (Passenger) -> Unit = {}
 ) {
-    var edit by remember(passenger.id, passenger.phone, passenger.passport, passenger.isResponsible, passenger.responsibleId) {
+    val context = LocalContext.current
+    var edit by remember(passenger.id, passenger.phone, passenger.isResponsible, passenger.responsibleId) {
         mutableStateOf(passenger)
     }
     var responsiblePicker by remember { mutableStateOf(false) }
     var dependentPicker by remember { mutableStateOf(false) }
-    val dependents = remember(allPassengers, passenger.id) { allPassengers.filter { it.responsibleId == passenger.id } }
+    var files by remember(passenger.id) { mutableStateOf(vm.passengerFiles(passenger.id)) }
+    val dependents = allPassengers.filter { it.responsibleId == passenger.id }
     val currentResponsible = edit.responsibleId?.let { id -> allPassengers.firstOrNull { it.id == id } }
+    val personalOps = remember(passenger.id, vm.transactions.collectAsState().value) { vm.transactionsForPassenger(passenger.id) }
+    val dependentOps = remember(passenger.id, allPassengers) { if (passenger.isResponsible) vm.transactionsForResponsible(passenger.id) else emptyList() }
+
+    val contactLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val uri = result.data?.data
+            if (uri != null) {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(
+                        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                        ContactsContract.CommonDataKinds.Phone.NUMBER
+                    ),
+                    null, null, null
+                )?.use { c ->
+                    if (c.moveToFirst()) {
+                        val nameIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                        val numberIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                        val name = if (nameIndex >= 0) c.getString(nameIndex) else null
+                        val number = if (numberIndex >= 0) c.getString(numberIndex) else null
+                        edit = edit.copy(
+                            name = name?.takeIf { it.isNotBlank() } ?: edit.name,
+                            phone = number?.takeIf { it.isNotBlank() } ?: edit.phone
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    val passportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val added = mutableListOf<PassengerFile>()
+        uris.forEach { uri ->
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) { }
+            var displayName: String? = null
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) displayName = c.getString(idx)
+                }
+            }
+            val mime = context.contentResolver.getType(uri)
+            added += vm.addPassengerFileImmediate(passenger.id, uri.toString(), mime, displayName)
+        }
+        files = vm.passengerFiles(passenger.id)
+        if (added.isNotEmpty()) Toast.makeText(context, "تمت إضافة ملفات الجواز", Toast.LENGTH_SHORT).show()
+    }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.9f), shape = RoundedCornerShape(24.dp)) {
+        Surface(Modifier.fillMaxWidth(0.97f).fillMaxHeight(0.94f), shape = RoundedCornerShape(24.dp)) {
             Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column {
@@ -623,29 +681,101 @@ private fun PassengerDetailDialog(
                     item {
                         OutlinedTextField(edit.name, { edit = edit.copy(name = it) }, Modifier.fillMaxWidth(), label = { Text("الاسم") })
                     }
+
+                    item {
+                        OutlinedTextField(
+                            edit.phone.orEmpty(), { edit = edit.copy(phone = it) }, Modifier.fillMaxWidth(),
+                            label = { Text("الهاتف / واتساب") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                            trailingIcon = {
+                                IconButton(onClick = {
+                                    contactLauncher.launch(Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI))
+                                }) { Icon(Icons.Rounded.Contacts, "اختيار من جهات الاتصال") }
+                            }
+                        )
+                    }
+
                     item {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                edit.phone.orEmpty(), { edit = edit.copy(phone = it) }, Modifier.weight(1f),
-                                label = { Text("الهاتف / واتساب") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
-                            )
-                            OutlinedTextField(
-                                edit.passport.orEmpty(), { edit = edit.copy(passport = it) }, Modifier.weight(1f),
-                                label = { Text("الجواز") }
-                            )
+                            OutlinedButton(
+                                modifier = Modifier.weight(1f),
+                                onClick = { contactLauncher.launch(Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)) }
+                            ) {
+                                Icon(Icons.Rounded.ContactPhone, null)
+                                Spacer(Modifier.width(5.dp))
+                                Text("جهات الاتصال")
+                            }
+                            Button(
+                                modifier = Modifier.weight(1f),
+                                enabled = edit.phone.orEmpty().filter(Char::isDigit).isNotBlank(),
+                                onClick = {
+                                    val phone = edit.phone.orEmpty().filter(Char::isDigit)
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone)))
+                                }
+                            ) {
+                                Icon(Icons.Rounded.Chat, null)
+                                Spacer(Modifier.width(5.dp))
+                                Text("WhatsApp")
+                            }
                         }
                     }
+
+                    item {
+                        Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                            Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("ملفات الجواز", fontWeight = FontWeight.Bold)
+                                        Text("صور أو PDF • يمكن تعيين ملف أساسي", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    TextButton(onClick = { passportLauncher.launch(arrayOf("image/*", "application/pdf")) }) {
+                                        Icon(Icons.Rounded.UploadFile, null)
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("رفع")
+                                    }
+                                }
+                                if (files.isEmpty()) {
+                                    Text("لا توجد ملفات مرفوعة", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                } else {
+                                    files.forEach { file ->
+                                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(if (file.mimeType?.startsWith("image/") == true) Icons.Rounded.Image else Icons.Rounded.PictureAsPdf, null)
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(file.displayName ?: "ملف جواز", Modifier.weight(1f), maxLines = 1)
+                                            if (file.isPrimary) AssistChip(onClick = {}, label = { Text("أساسي", fontSize = 10.sp) })
+                                            IconButton(onClick = {
+                                                try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(file.uri)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
+                                                catch (_: Exception) { Toast.makeText(context, "تعذر فتح الملف", Toast.LENGTH_SHORT).show() }
+                                            }) { Icon(Icons.Rounded.OpenInNew, "فتح") }
+                                            if (!file.isPrimary) {
+                                                IconButton(onClick = {
+                                                    vm.setPrimaryPassengerFileImmediate(passenger.id, file.id)
+                                                    files = vm.passengerFiles(passenger.id)
+                                                }) { Icon(Icons.Rounded.StarOutline, "تعيين أساسي") }
+                                            }
+                                            IconButton(onClick = {
+                                                vm.deletePassengerFileImmediate(file.id)
+                                                files = vm.passengerFiles(passenger.id)
+                                            }) { Icon(Icons.Rounded.DeleteOutline, "حذف") }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     item {
                         Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
                             Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
                                     Text("تعيين كمسؤول", fontWeight = FontWeight.Bold)
-                                    Text("يبقى ضمن جميع المسافرين وتظهر داخله قائمة التابعين.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("يبقى ضمن جميع المسافرين ويضم التابعين تحته.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Switch(edit.isResponsible, { edit = edit.copy(isResponsible = it) })
                             }
                         }
                     }
+
                     item {
                         OutlinedButton(onClick = { responsiblePicker = true }, modifier = Modifier.fillMaxWidth()) {
                             Icon(Icons.Rounded.SupervisorAccount, null)
@@ -653,6 +783,7 @@ private fun PassengerDetailDialog(
                             Text("المسؤول الحالي: " + (currentResponsible?.name ?: "لا يوجد"))
                         }
                     }
+
                     if (edit.responsibleId != null) {
                         item {
                             OutlinedTextField(
@@ -663,24 +794,41 @@ private fun PassengerDetailDialog(
                             )
                         }
                     }
+
+                    item {
+                        Text("عمليات هذا الشخص (" + personalOps.size + ")", fontWeight = FontWeight.Bold)
+                    }
+                    if (personalOps.isEmpty()) {
+                        item { Text("لا توجد عمليات مرتبطة", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) }
+                    } else {
+                        items(personalOps.take(20), key = { "self-" + it.id }) { tx ->
+                            PersonOperationRow(tx) { onOpenTransaction(tx.id) }
+                        }
+                    }
+
                     if (edit.isResponsible) {
                         item {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text("المسافرون التابعون (${dependents.size})", fontWeight = FontWeight.Bold)
+                                Text("المسافرون التابعون (" + dependents.size + ")", fontWeight = FontWeight.Bold)
                                 TextButton(onClick = { dependentPicker = true }) {
-                                    Icon(Icons.Rounded.PersonAdd, null)
+                                    Icon(Icons.Rounded.GroupAdd, null)
                                     Spacer(Modifier.width(4.dp))
-                                    Text("إضافة تابع")
+                                    Text("إضافة عدة")
                                 }
                             }
                         }
-                        items(dependents, key = { it.id }) { d ->
+                        items(dependents, key = { "dep-" + it.id }) { d ->
                             Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text(d.name, modifier = Modifier.weight(1f))
+                                Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(d.name, Modifier.weight(1f).clickable { onOpenPassenger(d) }, color = MaterialTheme.colorScheme.primary)
                                     TextButton(onClick = { vm.assignResponsible(d.id, null) }) { Text("فك الربط") }
                                 }
                             }
+                        }
+
+                        item { Text("عمليات التابعين (" + dependentOps.size + ")", fontWeight = FontWeight.Bold) }
+                        items(dependentOps.take(30), key = { "dep-op-" + it.id }) { tx ->
+                            PersonOperationRow(tx) { onOpenTransaction(tx.id) }
                         }
                     }
                 }
@@ -728,24 +876,103 @@ private fun PassengerDetailDialog(
     }
 
     if (dependentPicker) {
-        AlertDialog(
-            onDismissRequest = { dependentPicker = false },
-            title = { Text("إضافة مسافر تابع") },
-            text = {
-                LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    items(allPassengers.filter { it.id != edit.id && it.responsibleId != edit.id }, key = { it.id }) { p ->
-                        TextButton(onClick = {
-                            vm.assignResponsible(p.id, edit.id)
-                            dependentPicker = false
-                        }) {
-                            Text(p.name + if (p.responsibleId != null) " • مرتبط بمسؤول آخر" else "")
+        BulkDependentPicker(
+            allPassengers = allPassengers,
+            responsible = edit,
+            onDismiss = { dependentPicker = false },
+            onConfirm = { ids ->
+                ids.forEach { vm.assignResponsible(it, edit.id) }
+                dependentPicker = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun PersonOperationRow(tx: Transaction, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 1.dp
+    ) {
+        Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text((tx.pnr ?: labelFor(tx.type)) + " • " + labelFor(tx.type), fontWeight = FontWeight.SemiBold)
+                Text("#" + (tx.operationNo ?: "—") + " • " + formatMoney(tx.amount, tx.currency), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Icon(Icons.Rounded.ChevronLeft, null)
+        }
+    }
+}
+
+@Composable
+private fun BulkDependentPicker(
+    allPassengers: List<Passenger>,
+    responsible: Passenger,
+    onDismiss: () -> Unit,
+    onConfirm: (Set<String>) -> Unit
+) {
+    var search by remember { mutableStateOf("") }
+    var onlyFree by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val visible = allPassengers.filter {
+        it.id != responsible.id &&
+            it.responsibleId != responsible.id &&
+            (!onlyFree || it.responsibleId == null) &&
+            (search.isBlank() || it.name.contains(search, true) || it.phone.orEmpty().contains(search, true) || it.passport.orEmpty().contains(search, true))
+    }
+    val movingCount = selected.count { id -> allPassengers.firstOrNull { it.id == id }?.responsibleId != null }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("إضافة مسافرين تابعين") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    search, { search = it }, Modifier.fillMaxWidth(),
+                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                    label = { Text("بحث") },
+                    singleLine = true
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(selected = onlyFree, onClick = { onlyFree = !onlyFree }, label = { Text("بدون مسؤول فقط") })
+                    Text(selected.size.toString() + " محدد", color = MaterialTheme.colorScheme.primary)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(onClick = { selected = selected + visible.map { it.id } }) { Text("تحديد الكل الظاهر") }
+                    TextButton(onClick = { selected = emptySet() }) { Text("إلغاء التحديد") }
+                }
+                if (movingCount > 0) {
+                    Text("تنبيه: " + movingCount + " من المحددين مرتبطون بمسؤول آخر وسيتم نقلهم.", color = Warn, fontSize = 12.sp)
+                }
+                LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                    items(visible, key = { it.id }) { p ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                selected = if (p.id in selected) selected - p.id else selected + p.id
+                            }.padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = p.id in selected,
+                                onCheckedChange = { checked -> selected = if (checked) selected + p.id else selected - p.id }
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(p.name)
+                                if (p.responsibleId != null) Text("مرتبط بمسؤول آخر", fontSize = 11.sp, color = Warn)
+                            }
                         }
                     }
                 }
-            },
-            confirmButton = {}
-        )
-    }
+            }
+        },
+        confirmButton = {
+            Button(enabled = selected.isNotEmpty(), onClick = { onConfirm(selected) }) {
+                Text("إضافة المحددين (" + selected.size + ")")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+    )
 }
 
 @Composable
