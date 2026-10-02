@@ -8,11 +8,15 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 2) {
+class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE transactions(
                 id TEXT PRIMARY KEY,
+                external_id TEXT,
+                ledger_id TEXT,
+                document_id TEXT,
+                snapshot_id TEXT,
                 operation_no TEXT,
                 transaction_date TEXT,
                 currency TEXT NOT NULL,
@@ -30,6 +34,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 base_fare REAL,
                 reference_total REAL,
                 airline TEXT,
+                visa_country TEXT,
                 review_state TEXT NOT NULL,
                 warning TEXT,
                 note TEXT,
@@ -42,6 +47,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             )
         """.trimIndent())
         db.execSQL("CREATE UNIQUE INDEX idx_tx_operation_currency ON transactions(currency, operation_no) WHERE operation_no IS NOT NULL AND operation_no <> ''")
+        db.execSQL("CREATE UNIQUE INDEX idx_tx_external_id ON transactions(external_id) WHERE external_id IS NOT NULL AND external_id <> ''")
         db.execSQL("CREATE INDEX idx_tx_pnr ON transactions(pnr)")
         db.execSQL("CREATE INDEX idx_tx_type ON transactions(type)")
         db.execSQL("CREATE INDEX idx_tx_review ON transactions(review_state)")
@@ -52,7 +58,10 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 name TEXT NOT NULL,
                 normalized_name TEXT NOT NULL,
                 passport TEXT,
-                responsible_id TEXT
+                phone TEXT,
+                responsible_id TEXT,
+                responsible_relation TEXT,
+                is_responsible INTEGER NOT NULL DEFAULT 0
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX idx_passenger_name ON passengers(normalized_name)")
@@ -72,6 +81,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 tx_id TEXT NOT NULL,
                 passenger_id TEXT NOT NULL,
                 amount REAL,
+                base_fare REAL,
                 passenger_type TEXT,
                 document_no TEXT,
                 product TEXT,
@@ -86,10 +96,22 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 airline TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 value REAL NOT NULL,
+                round_trip_value REAL,
                 reverse_only INTEGER NOT NULL DEFAULT 0,
+                direction TEXT NOT NULL DEFAULT 'ANY',
+                effective_from TEXT,
                 learned INTEGER NOT NULL DEFAULT 0,
                 active INTEGER NOT NULL DEFAULT 1,
                 note TEXT,
+                updated_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+
+        db.execSQL("""
+            CREATE TABLE airline_prefixes(
+                prefix TEXT PRIMARY KEY,
+                airline TEXT NOT NULL,
+                learned INTEGER NOT NULL DEFAULT 1,
                 updated_at INTEGER NOT NULL
             )
         """.trimIndent())
@@ -140,6 +162,29 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             db.execSQL("ALTER TABLE tx_passengers ADD COLUMN flags TEXT")
             db.execSQL("DROP INDEX IF EXISTS idx_tx_operation")
             db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_tx_operation_currency ON transactions(currency, operation_no) WHERE operation_no IS NOT NULL AND operation_no <> ''")
+        }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE transactions ADD COLUMN external_id TEXT")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN ledger_id TEXT")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN document_id TEXT")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN snapshot_id TEXT")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN visa_country TEXT")
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_tx_external_id ON transactions(external_id) WHERE external_id IS NOT NULL AND external_id <> ''")
+            db.execSQL("ALTER TABLE passengers ADD COLUMN phone TEXT")
+            db.execSQL("ALTER TABLE passengers ADD COLUMN responsible_relation TEXT")
+            db.execSQL("ALTER TABLE passengers ADD COLUMN is_responsible INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE tx_passengers ADD COLUMN base_fare REAL")
+            db.execSQL("ALTER TABLE commission_rules ADD COLUMN round_trip_value REAL")
+            db.execSQL("ALTER TABLE commission_rules ADD COLUMN direction TEXT NOT NULL DEFAULT 'ANY'")
+            db.execSQL("ALTER TABLE commission_rules ADD COLUMN effective_from TEXT")
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS airline_prefixes(
+                    prefix TEXT PRIMARY KEY,
+                    airline TEXT NOT NULL,
+                    learned INTEGER NOT NULL DEFAULT 1,
+                    updated_at INTEGER NOT NULL
+                )
+            """.trimIndent())
         }
     }
 
