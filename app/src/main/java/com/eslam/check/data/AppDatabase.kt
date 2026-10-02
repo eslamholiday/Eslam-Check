@@ -879,8 +879,186 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     private fun Cursor.toPassenger() = Passenger(
         id = s("id"), name = s("name"), passport = sn("passport"), phone = sn("phone"),
         responsibleId = sn("responsible_id"), responsibleRelation = sn("responsible_relation"),
-        isResponsible = i("is_responsible") == 1
+        isResponsible = i("is_responsible") == 1, mergedIntoId = sn("merged_into_id")
     )
+
+    private fun normalizeAliasValue(kind: String, value: String): String = when (kind.uppercase()) {
+        "PHONE" -> value.filter(Char::isDigit)
+        "PASSPORT" -> value.uppercase().replace(Regex("[^A-Z0-9]"), "")
+        else -> normalize(value)
+    }
+
+    private fun addAlias(
+        db: SQLiteDatabase,
+        passengerId: String,
+        kind: String,
+        value: String?,
+        sourcePassengerId: String? = null
+    ) {
+        val clean = value?.trim()?.takeIf { it.isNotBlank() } ?: return
+        val normalized = normalizeAliasValue(kind, clean)
+        if (normalized.isBlank()) return
+        val exists = db.rawQuery(
+            "SELECT 1 FROM passenger_aliases WHERE passenger_id=? AND kind=? AND normalized_value=? LIMIT 1",
+            arrayOf(passengerId, kind.uppercase(), normalized)
+        ).use { it.moveToFirst() }
+        if (exists) return
+        db.insert("passenger_aliases", null, ContentValues().apply {
+            put("id", UUID.randomUUID().toString())
+            put("passenger_id", passengerId)
+            put("kind", kind.uppercase())
+            put("value", clean)
+            put("normalized_value", normalized)
+            put("source_passenger_id", sourcePassengerId)
+            put("created_at", System.currentTimeMillis())
+        })
+    }
+
+    private fun passengerRawById(id: String): Passenger? {
+        readableDatabase.rawQuery("SELECT * FROM passengers WHERE id=? LIMIT 1", arrayOf(id)).use { c ->
+            return if (c.moveToFirst()) c.toPassenger() else null
+        }
+    }
+
+    private fun resolveCanonicalPassengerId(id: String): String {
+        var current = id
+        val visited = mutableSetOf<String>()
+        repeat(32) {
+            if (!visited.add(current)) return current
+            val next = readableDatabase.rawQuery(
+                "SELECT merged_into_id FROM passengers WHERE id=? LIMIT 1",
+                arrayOf(current)
+            ).use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getString(0) else null }
+            if (next.isNullOrBlank()) return current
+            current = next
+        }
+        return current
+    }
+
+    private fun mergedGroupIds(primaryId: String): List<String> {
+        val root = resolveCanonicalPassengerId(primaryId)
+        val out = linkedSetOf(root)
+        val queue = ArrayDeque<String>()
+        queue.add(root)
+        while (queue.isNotEmpty()) {
+            val parent = queue.removeFirst()
+            readableDatabase.rawQuery(
+                "SELECT id FROM passengers WHERE merged_into_id=?",
+                arrayOf(parent)
+            ).use { c ->
+                while (c.moveToNext()) {
+                    val child = c.getString(0)
+                    if (out.add(child)) queue.add(child)
+                }
+            }
+        }
+        return out.toList()
+    }
+
+    fun passengerById(id: String): Passenger? {
+        val rootId = resolveCanonicalPassengerId(id)
+        val raw = passengerRawById(rootId) ?: return null
+        val group = mergedGroupIds(rootId)
+        val responsible = group.any { passengerRawById(it)?.isResponsible == true }
+        val responsibleId = raw.responsibleId?.let { resolveCanonicalPassengerId(it) }
+        return raw.copy(
+            isResponsible = responsible,
+            responsibleId = responsibleId,
+            mergedIntoId = null
+        )
+    }
+
+    fun passengerAliases(passengerId: String): List<PassengerAlias> {
+        val ids = mergedGroupIds(passengerId)
+        if (ids.isEmpty()) return emptyList()
+        val placeholders = ids.joinToString(",") { "?" }
+        val out = mutableListOf<PassengerAlias>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM passenger_aliases WHERE passenger_id IN ($placeholders) ORDER BY kind,value",
+            ids.toTypedArray()
+        ).use { c ->
+            while (c.moveToNext()) {
+                out += PassengerAlias(
+                    id = c.s("id"),
+                    passengerId = c.s("passenger_id"),
+                    kind = c.s("kind"),
+                    value = c.s("value"),
+                    normalizedValue = c.s("normalized_value"),
+                    sourcePassengerId = c.sn("source_passenger_id"),
+                    createdAt = c.l("created_at")
+                )
+            }
+        }
+        return out.distinctBy { it.kind + "|" + it.normalizedValue }
+    }
+
+    fun mergedPassengers(passengerId: String): List<Passenger> =
+        mergedGroupIds(passengerId).drop(1).mapNotNull(::passengerRawById).sortedBy { it.name }
+
+    fun mergePassengers(primaryId: String, secondaryIds: Collection<String>): Passenger? {
+        val primary = passengerById(primaryId) ?: return null
+        val targets = secondaryIds
+            .map(::resolveCanonicalPassengerId)
+            .filter { it != primary.id }
+            .distinct()
+        if (targets.isEmpty()) return primary
+
+        writableDatabase.beginTransaction()
+        try {
+            targets.forEach { sourceId ->
+                val source = passengerRawById(sourceId) ?: return@forEach
+
+                addAlias(writableDatabase, primary.id, "NAME", source.name, source.id)
+                addAlias(writableDatabase, primary.id, "PASSPORT", source.passport, source.id)
+                addAlias(writableDatabase, primary.id, "PHONE", source.phone, source.id)
+
+                readableDatabase.rawQuery(
+                    "SELECT kind,value FROM passenger_aliases WHERE passenger_id=?",
+                    arrayOf(source.id)
+                ).use { c ->
+                    while (c.moveToNext()) addAlias(writableDatabase, primary.id, c.getString(0), c.getString(1), source.id)
+                }
+
+                val currentPrimary = passengerRawById(primary.id) ?: primary
+                writableDatabase.update("passengers", ContentValues().apply {
+                    if (currentPrimary.passport.isNullOrBlank() && !source.passport.isNullOrBlank()) put("passport", source.passport)
+                    if (currentPrimary.phone.isNullOrBlank() && !source.phone.isNullOrBlank()) put("phone", source.phone)
+                    if (source.isResponsible) put("is_responsible", 1)
+                }, "id=?", arrayOf(primary.id))
+
+                writableDatabase.update("passengers", ContentValues().apply {
+                    put("merged_into_id", primary.id)
+                }, "id=?", arrayOf(source.id))
+
+                audit("passenger", primary.id, "merge_passenger", source.id + "|" + source.name)
+                audit("passenger", source.id, "merged_into", primary.id + "|" + primary.name)
+            }
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        return passengerById(primary.id)
+    }
+
+    fun unmergePassenger(sourceId: String): Passenger? {
+        val source = passengerRawById(sourceId) ?: return null
+        val primaryId = source.mergedIntoId ?: return source
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.update("passengers", ContentValues().apply { putNull("merged_into_id") }, "id=?", arrayOf(sourceId))
+            writableDatabase.delete(
+                "passenger_aliases",
+                "passenger_id=? AND source_passenger_id=?",
+                arrayOf(resolveCanonicalPassengerId(primaryId), sourceId)
+            )
+            audit("passenger", primaryId, "unmerge_passenger", sourceId + "|" + source.name)
+            audit("passenger", sourceId, "unmerged_from", primaryId)
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        return passengerRawById(sourceId)
+    }
 
     fun txPassengerDetails(txId: String): List<TxPassengerDetail> {
         val out = mutableListOf<TxPassengerDetail>()
@@ -891,8 +1069,9 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             WHERE tp.tx_id=? ORDER BY p.name
         """.trimIndent(), arrayOf(txId)).use { c ->
             while (c.moveToNext()) {
+                val raw = c.toPassenger()
                 out += TxPassengerDetail(
-                    passenger = c.toPassenger(),
+                    passenger = passengerById(raw.id) ?: raw,
                     amount = c.dn("tp_amount"),
                     baseFare = c.dn("tp_base_fare"),
                     passengerType = c.sn("tp_type"),
@@ -906,43 +1085,70 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun setPassengerBaseFare(txId: String, passengerId: String, baseFare: Double?) {
+        val ids = mergedGroupIds(passengerId)
+        val placeholders = ids.joinToString(",") { "?" }
+        val args = mutableListOf<String>()
+        args += txId
+        args += ids
         writableDatabase.update("tx_passengers", ContentValues().apply {
             if (baseFare == null) putNull("base_fare") else put("base_fare", baseFare)
-        }, "tx_id=? AND passenger_id=?", arrayOf(txId, passengerId))
-        audit("tx_passenger", "$txId/$passengerId", "base_fare", baseFare?.toString())
+        }, "tx_id=? AND passenger_id IN ($placeholders)", args.toTypedArray())
+        audit("tx_passenger", txId + "/" + resolveCanonicalPassengerId(passengerId), "base_fare", baseFare?.toString())
     }
 
     fun updatePassenger(person: Passenger) {
+        val canonicalId = resolveCanonicalPassengerId(person.id)
+        val old = passengerRawById(canonicalId) ?: return
+        addAlias(writableDatabase, canonicalId, "NAME", old.name, canonicalId)
+        addAlias(writableDatabase, canonicalId, "PASSPORT", old.passport, canonicalId)
+        addAlias(writableDatabase, canonicalId, "PHONE", old.phone, canonicalId)
+
+        val responsibleId = person.responsibleId?.let(::resolveCanonicalPassengerId)
         writableDatabase.update("passengers", ContentValues().apply {
-            put("name", person.name.trim()); put("normalized_name", normalize(person.name)); put("passport", person.passport)
-            put("phone", person.phone); put("responsible_id", person.responsibleId); put("responsible_relation", person.responsibleRelation)
+            put("name", person.name.trim())
+            put("normalized_name", normalize(person.name))
+            put("passport", person.passport)
+            put("phone", person.phone)
+            put("responsible_id", responsibleId)
+            put("responsible_relation", person.responsibleRelation)
             put("is_responsible", if (person.isResponsible) 1 else 0)
-        }, "id=?", arrayOf(person.id))
-        audit("passenger", person.id, "edit", person.name)
+        }, "id=?", arrayOf(canonicalId))
+
+        addAlias(writableDatabase, canonicalId, "NAME", person.name, canonicalId)
+        addAlias(writableDatabase, canonicalId, "PASSPORT", person.passport, canonicalId)
+        addAlias(writableDatabase, canonicalId, "PHONE", person.phone, canonicalId)
+        audit("passenger", canonicalId, "edit", person.name)
     }
 
     fun assignResponsible(passengerId: String, responsibleId: String?, relation: String? = null) {
+        val canonicalPassenger = resolveCanonicalPassengerId(passengerId)
+        val canonicalResponsible = responsibleId?.let(::resolveCanonicalPassengerId)
         writableDatabase.update("passengers", ContentValues().apply {
-            put("responsible_id", responsibleId); put("responsible_relation", relation)
-        }, "id=?", arrayOf(passengerId))
-        if (responsibleId != null) {
-            writableDatabase.update("passengers", ContentValues().apply { put("is_responsible", 1) }, "id=?", arrayOf(responsibleId))
+            put("responsible_id", canonicalResponsible)
+            put("responsible_relation", relation)
+        }, "id=?", arrayOf(canonicalPassenger))
+        if (canonicalResponsible != null) {
+            writableDatabase.update("passengers", ContentValues().apply { put("is_responsible", 1) }, "id=?", arrayOf(canonicalResponsible))
         }
-        audit("passenger", passengerId, "assign_responsible", responsibleId)
+        audit("passenger", canonicalPassenger, "assign_responsible", canonicalResponsible)
     }
 
     fun dependentsOf(responsibleId: String): List<Passenger> {
-        val out = mutableListOf<Passenger>()
-        readableDatabase.rawQuery("SELECT * FROM passengers WHERE responsible_id=? ORDER BY name", arrayOf(responsibleId)).use { c ->
-            while (c.moveToNext()) out += c.toPassenger()
+        val responsibleGroup = mergedGroupIds(responsibleId)
+        if (responsibleGroup.isEmpty()) return emptyList()
+        val placeholders = responsibleGroup.joinToString(",") { "?" }
+        val out = linkedMapOf<String, Passenger>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM passengers WHERE responsible_id IN ($placeholders) AND merged_into_id IS NULL ORDER BY name",
+            responsibleGroup.toTypedArray()
+        ).use { c ->
+            while (c.moveToNext()) {
+                val p = c.toPassenger()
+                val canonical = passengerById(p.id) ?: p
+                out.putIfAbsent(canonical.id, canonical)
+            }
         }
-        return out
-    }
-
-    fun passengerById(id: String): Passenger? {
-        readableDatabase.rawQuery("SELECT * FROM passengers WHERE id=? LIMIT 1", arrayOf(id)).use { c ->
-            return if (c.moveToFirst()) c.toPassenger() else null
-        }
+        return out.values.toList()
     }
 
     fun setAirlineForTransaction(txId: String, airline: String?, learnPrefix: Boolean = true) {
