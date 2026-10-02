@@ -38,6 +38,8 @@ data class Transaction(
     val referenceTotal: Double? = null,
     val airline: String? = null,
     val visaCountry: String? = null,
+    val externalLink: String? = null,
+    val commissionRuleSnapshot: String? = null,
     val reviewState: ReviewState = ReviewState.UNREVIEWED,
     val warning: String? = null,
     val note: String? = null,
@@ -57,6 +59,16 @@ data class Passenger(
     val responsibleId: String? = null,
     val responsibleRelation: String? = null,
     val isResponsible: Boolean = false
+)
+
+data class PassengerFile(
+    val id: String,
+    val passengerId: String,
+    val uri: String,
+    val mimeType: String? = null,
+    val displayName: String? = null,
+    val isPrimary: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis()
 )
 
 data class ResponsibleContact(
@@ -86,6 +98,14 @@ data class TxPassengerDetail(
     val flags: String? = null
 )
 
+data class AirlineInfo(
+    val id: String,
+    val code: String,
+    val name: String,
+    val active: Boolean = true,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
 data class CommissionRule(
     val id: String,
     val airline: String,
@@ -99,6 +119,15 @@ data class CommissionRule(
     val active: Boolean = true,
     val note: String? = null,
     val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class AuditEvent(
+    val id: String,
+    val entityType: String,
+    val entityId: String,
+    val action: String,
+    val details: String? = null,
+    val createdAt: Long
 )
 
 data class ParsedPassenger(
@@ -127,7 +156,7 @@ data class ParsedTransaction(
     val route: String?,
     val amount: Double,
     val ledgerEffect: Double? = null,
-    val discount: Double,
+    val discount: Double = 0.0,
     val balanceAfter: Double? = null,
     val passengers: List<ParsedPassenger>,
     val airline: String? = null,
@@ -159,6 +188,7 @@ data class BridgeLedgerMeta(
 
 data class BridgeParseResult(
     val version: Int = 1,
+    val dictionaryVersion: String = "",
     val batchId: String = "",
     val documentId: String = "",
     val snapshotId: String = "",
@@ -166,7 +196,8 @@ data class BridgeParseResult(
     val ledgers: List<BridgeLedgerMeta> = emptyList(),
     val transactions: List<ParsedTransaction> = emptyList(),
     val errors: List<String> = emptyList(),
-    val warnings: List<String> = emptyList()
+    val warnings: List<String> = emptyList(),
+    val checksumVerified: Boolean? = null
 ) {
     val canImport: Boolean get() = errors.isEmpty() && transactions.isNotEmpty()
     val usdCount: Int get() = transactions.count { it.currency == Currency.USD }

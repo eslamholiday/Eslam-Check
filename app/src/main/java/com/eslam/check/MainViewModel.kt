@@ -33,6 +33,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _rules = MutableStateFlow<List<CommissionRule>>(emptyList())
     val rules: StateFlow<List<CommissionRule>> = _rules.asStateFlow()
 
+    private val _airlines = MutableStateFlow<List<AirlineInfo>>(emptyList())
+    val airlines: StateFlow<List<AirlineInfo>> = _airlines.asStateFlow()
+
+    private val _settingsRevision = MutableStateFlow(0)
+    val settingsRevision: StateFlow<Int> = _settingsRevision.asStateFlow()
+
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
 
@@ -50,6 +56,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _passengers.value = db.allPassengers(500)
             _stats.value = db.dashboardStats()
             _rules.value = db.rules()
+            _airlines.value = db.airlines()
         }
     }
 
@@ -160,7 +167,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun passengerById(id: String): Passenger? = db.passengerById(id)
     fun dependentsOf(id: String): List<Passenger> = db.dependentsOf(id)
     fun customerPhoneForTransaction(id: String): String? = db.customerPhoneForTransaction(id)
+    fun responsibleForTransaction(id: String): Passenger? = db.responsibleForTransaction(id)
+    fun relatedOperations(id: String): List<Transaction> = db.relatedOperations(id)
+    fun transactionsForPassenger(id: String): List<Transaction> = db.transactionsForPassenger(id)
+    fun transactionsForResponsible(id: String): List<Transaction> = db.transactionsForResponsible(id)
+    fun passengerFiles(id: String): List<PassengerFile> = db.passengerFiles(id)
+    fun auditEvents(entityType: String, entityId: String): List<AuditEvent> = db.auditEvents(entityType, entityId)
     fun airlineNames(): List<String> = db.airlineNames()
+    fun ruleForTransaction(tx: Transaction): CommissionRule? = db.ruleForTransaction(tx)
 
     fun updateTransaction(tx: Transaction) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -180,26 +194,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         roundTripValue: Double? = null,
         note: String? = null,
         effectiveFrom: String? = null,
-        direction: String = "ANY"
+        direction: String = "ANY",
+        ruleId: String? = null
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            val existing = db.rules().firstOrNull { it.airline.equals(airline.trim(), true) }
+            val existing = ruleId?.let { id -> db.rules().firstOrNull { it.id == id } }
             val rule = CommissionRule(
                 id = existing?.id ?: UUID.randomUUID().toString(),
                 airline = airline.trim(),
                 kind = kind,
                 value = value,
-                roundTripValue = roundTripValue ?: existing?.roundTripValue,
+                roundTripValue = roundTripValue,
                 reverseOnly = existing?.reverseOnly ?: false,
                 direction = direction,
-                effectiveFrom = effectiveFrom ?: existing?.effectiveFrom,
+                effectiveFrom = effectiveFrom,
                 learned = existing?.learned ?: false,
                 active = true,
-                note = note ?: existing?.note
+                note = note
             )
             db.saveRule(rule)
             _rules.value = db.rules()
-            _message.value = "تم حفظ قاعدة العمولة للمستقبل"
+            _message.value = if (existing == null) "تمت إضافة قاعدة عمولة جديدة" else "تم تحديث قاعدة العمولة"
+        }
+    }
+
+    fun addAirline(code: String, name: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.saveAirline(code, name)
+            _airlines.value = db.airlines()
+            _message.value = "تمت إضافة شركة الطيران"
         }
     }
 
@@ -231,6 +254,54 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun assignResponsibleForTransaction(txId: String, responsibleId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.assignResponsibleForTransaction(txId, responsibleId)
+            refresh()
+        }
+    }
+
+    fun assignResponsibleForPnr(pnr: String, responsibleId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.assignResponsibleForPnr(pnr, responsibleId)
+            refresh()
+        }
+    }
+
+    fun addPassengerFileImmediate(passengerId: String, uri: String, mimeType: String?, displayName: String?): PassengerFile =
+        db.addPassengerFile(passengerId, uri, mimeType, displayName)
+
+    fun deletePassengerFileImmediate(id: String) = db.deletePassengerFile(id)
+
+    fun setPrimaryPassengerFileImmediate(passengerId: String, id: String) = db.setPrimaryPassengerFile(passengerId, id)
+
+    fun addPassengerFile(passengerId: String, uri: String, mimeType: String?, displayName: String?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.addPassengerFile(passengerId, uri, mimeType, displayName)
+            _message.value = "تمت إضافة ملف الجواز"
+            refresh()
+        }
+    }
+
+    fun deletePassengerFile(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.deletePassengerFile(id)
+            _message.value = "تم حذف الملف"
+            refresh()
+        }
+    }
+
+    fun setPrimaryPassengerFile(passengerId: String, id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.setPrimaryPassengerFile(passengerId, id)
+            _message.value = "تم تعيين ملف الجواز الأساسي"
+            refresh()
+        }
+    }
+
     fun setting(key: String, default: String = "") = db.setting(key, default)
-    fun setSetting(key: String, value: String) = db.setSetting(key, value)
+    fun setSetting(key: String, value: String) {
+        db.setSetting(key, value)
+        _settingsRevision.value = _settingsRevision.value + 1
+    }
 }

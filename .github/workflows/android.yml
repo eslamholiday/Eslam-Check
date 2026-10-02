@@ -2,7 +2,7 @@ name: Build Eslam Check APK
 on:
   workflow_dispatch:
   push:
-    branches: [ main, bridge-v0.2, v0.3-audit-upgrade ]
+    branches: [ main, bridge-v0.2, v0.3-audit-upgrade, v0.4-smart-audit ]
 
 jobs:
   build:
