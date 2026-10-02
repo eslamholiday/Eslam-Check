@@ -56,12 +56,13 @@ private enum class MainTab(val title: String) {
 fun EslamCheckApp(vm: MainViewModel) {
     val settingsRevision by vm.settingsRevision.collectAsState()
     val preset = remember(settingsRevision) { vm.setting("theme_preset", "NAVY") }
-    val primary = remember(settingsRevision) { vm.setting("theme_primary", "") }
-    val background = remember(settingsRevision) { vm.setting("theme_background", "") }
-    val surface = remember(settingsRevision) { vm.setting("theme_surface", "") }
-    val textColor = remember(settingsRevision) { vm.setting("theme_text", "") }
-    val fontChoice = remember(settingsRevision) { vm.setting("font_choice", "SANS") }
-    val fontScale = remember(settingsRevision) { vm.setting("font_scale", "1.0").toFloatOrNull() ?: 1f }
+    val themeKey = preset.uppercase()
+    val primary = remember(settingsRevision, themeKey) { vm.setting("theme_" + themeKey + "_primary", "") }
+    val background = remember(settingsRevision, themeKey) { vm.setting("theme_" + themeKey + "_background", "") }
+    val surface = remember(settingsRevision, themeKey) { vm.setting("theme_" + themeKey + "_surface", "") }
+    val textColor = remember(settingsRevision, themeKey) { vm.setting("theme_" + themeKey + "_text", "") }
+    val fontChoice = remember(settingsRevision, themeKey) { vm.setting("theme_" + themeKey + "_font", "SANS") }
+    val fontScale = remember(settingsRevision, themeKey) { vm.setting("theme_" + themeKey + "_font_scale", "1.0").toFloatOrNull() ?: 1f }
 
     EslamCheckTheme(
         preset = preset,
