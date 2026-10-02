@@ -682,7 +682,26 @@ private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
 
 @Composable
 private fun WhatsAppSettings(vm: MainViewModel, onBack: () -> Unit) {
-    var issuer by remember { mutableStateOf(vm.setting("issuer_whatsapp", "")) }
+    val context = LocalContext.current
+    val defaultGroupUrl = "https://chat.whatsapp.com/CSubCIjAE5Y0qnzWOI5Z6K?s=cl&p=a&mlu=4&ilr=4"
+    var contactType by remember { mutableStateOf(vm.setting("issuer_contact_type", "GROUP")) }
+    var issuerPhone by remember { mutableStateOf(vm.setting("issuer_whatsapp", "")) }
+    var issuerGroupUrl by remember { mutableStateOf(vm.setting("issuer_group_url", defaultGroupUrl)) }
+
+    fun openTest() {
+        if (contactType == "GROUP") {
+            val url = issuerGroupUrl.trim()
+            if (url.startsWith("https://chat.whatsapp.com/")) {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            }
+        } else {
+            val phone = issuerPhone.filter(Char::isDigit)
+            if (phone.isNotBlank()) {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone")))
+            }
+        }
+    }
+
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -691,14 +710,81 @@ private fun WhatsAppSettings(vm: MainViewModel, onBack: () -> Unit) {
         item { SettingsHeader("واتساب", onBack) }
         item {
             Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("جهة الإصدار", fontWeight = FontWeight.Bold)
-                    OutlinedTextField(issuer, { issuer = it }, Modifier.fillMaxWidth(), label = { Text("رقم مع رمز الدولة") }, singleLine = true)
-                    Button(onClick = { vm.setSetting("issuer_whatsapp", issuer) }) { Text("حفظ") }
+                    Text(
+                        "اختر طريقة فتح جهة الإصدار: رقم واتساب أو رابط كروب.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = contactType == "GROUP",
+                            onClick = { contactType = "GROUP" },
+                            label = { Text("رابط كروب") },
+                            leadingIcon = { Icon(Icons.Rounded.Groups, null) }
+                        )
+                        FilterChip(
+                            selected = contactType == "PHONE",
+                            onClick = { contactType = "PHONE" },
+                            label = { Text("رقم واتساب") },
+                            leadingIcon = { Icon(Icons.Rounded.Phone, null) }
+                        )
+                    }
+
+                    if (contactType == "GROUP") {
+                        OutlinedTextField(
+                            value = issuerGroupUrl,
+                            onValueChange = { issuerGroupUrl = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("رابط كروب WhatsApp") },
+                            supportingText = { Text("مثال: https://chat.whatsapp.com/...") },
+                            singleLine = false,
+                            minLines = 2
+                        )
+                    } else {
+                        OutlinedTextField(
+                            value = issuerPhone,
+                            onValueChange = { issuerPhone = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("رقم مع رمز الدولة") },
+                            supportingText = { Text("أرقام فقط أو بصيغة +964...") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
+                        )
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                vm.setSetting("issuer_contact_type", contactType)
+                                vm.setSetting("issuer_whatsapp", issuerPhone)
+                                vm.setSetting("issuer_group_url", issuerGroupUrl.trim())
+                            }
+                        ) {
+                            Icon(Icons.Rounded.Save, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("حفظ")
+                        }
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = { openTest() }
+                        ) {
+                            Icon(Icons.Rounded.OpenInNew, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("اختبار")
+                        }
+                    }
                 }
             }
         }
-        item { SettingsInfoCard("الأزرار", "داخل العملية يبقى زر جهة الإصدار منفصلًا عن زر العميل.") }
+        item {
+            SettingsInfoCard(
+                "طريقة العمل",
+                "زر «جهة الإصدار» داخل العملية يفتح الخيار المحفوظ مباشرة. إذا اخترت الكروب يفتح رابط المجموعة، وإذا اخترت الرقم يفتح المحادثة الفردية."
+            )
+        }
     }
 }
 
@@ -907,10 +993,21 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
                     OutlinedButton(
                         modifier = Modifier.weight(1f),
                         onClick = {
-                            val phone = vm.setting("issuer_whatsapp", "").filter(Char::isDigit)
-                            if (phone.isNotBlank()) {
-                                val text = Uri.encode("PNR ${edit.pnr.orEmpty()}")
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone?text=$text")))
+                            val type = vm.setting("issuer_contact_type", "GROUP")
+                            if (type == "GROUP") {
+                                val groupUrl = vm.setting(
+                                    "issuer_group_url",
+                                    "https://chat.whatsapp.com/CSubCIjAE5Y0qnzWOI5Z6K?s=cl&p=a&mlu=4&ilr=4"
+                                ).trim()
+                                if (groupUrl.startsWith("https://chat.whatsapp.com/")) {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(groupUrl)))
+                                }
+                            } else {
+                                val phone = vm.setting("issuer_whatsapp", "").filter(Char::isDigit)
+                                if (phone.isNotBlank()) {
+                                    val text = Uri.encode("PNR ${edit.pnr.orEmpty()}")
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone?text=$text")))
+                                }
                             }
                         }
                     ) {
