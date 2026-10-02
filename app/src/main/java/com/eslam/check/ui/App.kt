@@ -504,20 +504,14 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
     var showMergeDialog by remember { mutableStateOf(false) }
 
     val filtered = remember(passengers, search, category) {
-        passengers.filter { p ->
-            val matches = search.isBlank() ||
-                p.name.contains(search, true) ||
-                p.passport.orEmpty().contains(search, true) ||
-                p.phone.orEmpty().contains(search, true) ||
-                p.id.contains(search, true) ||
-                vm.passengerAliases(p.id).any { it.value.contains(search, true) }
-            val classOk = when (category) {
+        val base = if (search.isBlank()) passengers else vm.passengerSuggestions(search)
+        base.filter { p ->
+            when (category) {
                 PassengerCategory.ALL -> true
                 PassengerCategory.RESPONSIBLE -> p.isResponsible
                 PassengerCategory.DEPENDENT -> p.responsibleId != null
                 PassengerCategory.INDEPENDENT -> !p.isResponsible && p.responsibleId == null
             }
-            matches && classOk
         }
     }
 
@@ -612,17 +606,11 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(p.name, fontWeight = FontWeight.Bold)
-                            val aliasCount = vm.passengerAliases(p.id).count { it.kind == "NAME" && !it.value.equals(p.name, true) }
                             Text(
-                                buildString {
-                                    append(
-                                        when {
-                                            p.isResponsible -> "مسؤول • " + vm.dependentsOf(p.id).size + " تابع"
-                                            p.responsibleId != null -> "تابع"
-                                            else -> "مستقل"
-                                        }
-                                    )
-                                    if (aliasCount > 0) append(" • ").append(aliasCount).append(" اسم بديل")
+                                when {
+                                    p.isResponsible -> "مسؤول • " + vm.dependentsOf(p.id).size + " تابع"
+                                    p.responsibleId != null -> "تابع"
+                                    else -> "مستقل"
                                 },
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.primary
