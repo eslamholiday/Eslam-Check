@@ -1949,13 +1949,19 @@ private fun ManualTransactionDialog(vm: MainViewModel, onDismiss: () -> Unit) {
 private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: () -> Unit, onNext: (String) -> Unit) {
     val all by vm.transactions.collectAsState()
     val rules by vm.rules.collectAsState()
+    val airlines by vm.airlines.collectAsState()
+    val allPassengers by vm.passengers.collectAsState()
     val tx = all.firstOrNull { it.id == id } ?: vm.transaction(id) ?: return
     val details = vm.txPassengerDetails(id)
     val context = LocalContext.current
-    var edit by remember(id, tx.airline, tx.referenceTotal, tx.type, tx.note) { mutableStateOf(tx) }
+    var edit by remember(id, tx.airline, tx.referenceTotal, tx.type, tx.note, tx.externalLink) { mutableStateOf(tx) }
     var airlinePicker by remember { mutableStateOf(false) }
+    var commissionEditor by remember { mutableStateOf(false) }
+    var responsiblePicker by remember { mutableStateOf(false) }
+    var selectedPassenger by remember { mutableStateOf<Passenger?>(null) }
     var rawOpen by remember { mutableStateOf(false) }
-    val rule = rules.firstOrNull { it.airline.equals(edit.airline, true) }
+
+    val rule = vm.ruleForTransaction(edit)
     val tolerance = if (edit.currency == Currency.USD) {
         vm.setting("usd_tolerance", "1").toDoubleOrNull() ?: 1.0
     } else {
@@ -1970,23 +1976,50 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
         tolerance = tolerance,
         route = edit.route
     )
+
     val sourceGross = details.mapNotNull { it.amount }.sum()
-    val sourceEquationDiff = if (sourceGross > 0.0 && edit.discount != 0.0) (sourceGross - edit.discount) - edit.amount else null
-    val related = all.filter { it.id != id && !edit.pnr.isNullOrBlank() && it.pnr.equals(edit.pnr, true) }
+    val sourceEquationDiff = if (edit.type == TxType.TICKET && sourceGross > 0.0) (sourceGross - edit.discount) - edit.amount else null
+    val related = vm.relatedOperations(id)
     val next = all.firstOrNull { it.reviewState != ReviewState.REVIEWED && it.id != id }
-    val customerPhone = vm.customerPhoneForTransaction(id)?.filter(Char::isDigit).orEmpty()
+    val responsible = vm.responsibleForTransaction(id)
+    val pnrPassengers = remember(id, related, allPassengers) {
+        val ids = linkedSetOf<String>()
+        val out = mutableListOf<Passenger>()
+        (listOf(tx) + related).forEach { item ->
+            if (edit.pnr.isNullOrBlank() || item.pnr.equals(edit.pnr, true)) {
+                vm.passengersFor(item.id).forEach { p ->
+                    if (ids.add(p.id)) out += p
+                }
+            }
+        }
+        if (out.isEmpty()) details.map { it.passenger } else out
+    }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxWidth(0.98f).fillMaxHeight(0.95f), shape = RoundedCornerShape(24.dp)) {
+        Surface(Modifier.fillMaxWidth(0.98f).fillMaxHeight(0.96f), shape = RoundedCornerShape(24.dp)) {
             Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Column {
-                        Text(edit.pnr ?: labelFor(edit.type), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                edit.pnr ?: labelFor(edit.type),
+                                fontSize = 26.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = if (!edit.pnr.isNullOrBlank()) Modifier.clickable {
+                                    copyToClipboard(context, "PNR", edit.pnr.orEmpty())
+                                } else Modifier
+                            )
+                            if (!edit.pnr.isNullOrBlank()) {
+                                IconButton(onClick = { copyToClipboard(context, "PNR", edit.pnr.orEmpty()) }, modifier = Modifier.size(32.dp)) {
+                                    Icon(Icons.Rounded.ContentCopy, "نسخ PNR", modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
                         Text(
-                            "${labelFor(edit.type)} • ${edit.currency.name}${edit.operationNo?.let { " • #$it" } ?: ""}",
+                            labelFor(edit.type) + " • " + edit.currency.name + (edit.operationNo?.let { " • #" + it } ?: ""),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        edit.externalId?.let { Text("ID: $it", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        edit.externalId?.let { Text("ID: " + it, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                     IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, "إغلاق") }
                 }
@@ -2004,7 +2037,7 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
                                             TxType.CHANGE to "تغيير",
                                             TxType.REFUND to "استرجاع",
                                             TxType.PAYMENT to "تسديد",
-                                            TxType.VOID to "Void"
+                                            TxType.VOID to "إلغاء"
                                         ).forEach { (t, label) ->
                                             FilterChip(selected = edit.type == t, onClick = { edit = edit.copy(type = t) }, label = { Text(label) })
                                         }
@@ -2018,31 +2051,52 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
                         Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
                             Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("بيانات العملية", fontWeight = FontWeight.Bold)
-                                edit.transactionDate?.let { Text("التاريخ: $it") }
-                                edit.route?.let { Text("المسار: $it") }
-                                Text("التسديد في الكشف: ${formatMoney(edit.amount, edit.currency)}")
-                                Text("Discount الكلي: ${formatMoney(edit.discount, edit.currency)}")
-                                if (sourceGross > 0.0) Text("مجموع قيم المسافرين: ${formatMoney(sourceGross, edit.currency)}")
-                                sourceEquationDiff?.let {
-                                    Text(
-                                        if (kotlin.math.abs(it) <= tolerance) "✓ مجموع التذاكر − Discount = التسديد" else "⚠ فرق معادلة المصدر: ${formatMoney(it, edit.currency)}",
-                                        color = if (kotlin.math.abs(it) <= tolerance) Good else Warn
-                                    )
+                                edit.transactionDate?.let { Text("التاريخ: " + it) }
+                                edit.route?.let { route ->
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("المسار: " + route, Modifier.weight(1f))
+                                        IconButton(onClick = { copyToClipboard(context, "Route", route) }, modifier = Modifier.size(28.dp)) {
+                                            Icon(Icons.Rounded.ContentCopy, "نسخ المسار", modifier = Modifier.size(16.dp))
+                                        }
+                                    }
                                 }
-                                edit.balanceAfter?.let { Text("الرصيد بعد العملية: ${formatMoney(it, edit.currency)}", fontSize = 12.sp) }
+                                Text("التسديد في الكشف: " + formatMoney(edit.amount, edit.currency))
+                                if (edit.type == TxType.TICKET) {
+                                    Text("Discount الكلي: " + formatMoney(edit.discount, edit.currency))
+                                    if (sourceGross > 0.0) Text("مجموع قيم المسافرين: " + formatMoney(sourceGross, edit.currency))
+                                    sourceEquationDiff?.let { diff ->
+                                        Text(
+                                            if (kotlin.math.abs(diff) <= tolerance) "✓ مجموع التذاكر − Discount = التسديد"
+                                            else "⚠ فرق معادلة المصدر: " + formatMoney(diff, edit.currency),
+                                            color = if (kotlin.math.abs(diff) <= tolerance) Good else Warn
+                                        )
+                                    }
+                                }
+                                edit.balanceAfter?.let { Text("الرصيد بعد العملية: " + formatMoney(it, edit.currency), fontSize = 12.sp) }
                             }
                         }
                     }
 
-                    if (edit.type == TxType.TICKET || (edit.type == TxType.VOID && edit.pnr != null)) {
+                    if (edit.type == TxType.TICKET || (edit.type == TxType.VOID && edit.pnr != null && edit.visaCountry == null)) {
                         item {
-                            OutlinedButton(
-                                modifier = Modifier.fillMaxWidth(),
-                                onClick = { airlinePicker = true }
-                            ) {
-                                Icon(Icons.Rounded.Flight, null)
-                                Spacer(Modifier.width(6.dp))
-                                Text("شركة الطيران: " + (edit.airline ?: "مبهم — اختر الخط"))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { airlinePicker = true }
+                                ) {
+                                    Icon(Icons.Rounded.Flight, null)
+                                    Spacer(Modifier.width(5.dp))
+                                    Text(edit.airline ?: "الخط مبهم", maxLines = 2)
+                                }
+                                FilledTonalButton(
+                                    modifier = Modifier.weight(1f),
+                                    enabled = !edit.airline.isNullOrBlank(),
+                                    onClick = { commissionEditor = true }
+                                ) {
+                                    Icon(Icons.Rounded.Percent, null)
+                                    Spacer(Modifier.width(5.dp))
+                                    Text(rule?.let(::ruleLabel) ?: "تحديد العمولة", maxLines = 2)
+                                }
                             }
                         }
 
@@ -2057,15 +2111,32 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
                         }
 
                         item {
-                            Text("المسافرون داخل PNR", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                            Text("Discount المصدر كلي؛ العمولة المتوقعة تحسب لكل مسافر من Base Fare ثم تجمع.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("المسافرون داخل PNR", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                                    Text("Base Fare لكل مسافر → Taxes → العمولة المتوقعة → المقارنة مع Discount.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if (details.size > 1 && responsible == null) {
+                                    TextButton(onClick = { responsiblePicker = true }) {
+                                        Icon(Icons.Rounded.SupervisorAccount, null)
+                                        Spacer(Modifier.width(3.dp))
+                                        Text("تحديد مسؤول")
+                                    }
+                                }
+                            }
                         }
 
                         if (details.isEmpty()) {
                             item { Text("لا توجد تفاصيل مسافرين في المصدر.", color = Warn) }
                         } else {
                             items(details, key = { it.passenger.id }) { d ->
-                                PassengerAuditCard(vm, edit, d, rule)
+                                PassengerAuditCard(
+                                    vm = vm,
+                                    tx = edit,
+                                    detail = d,
+                                    rule = rule,
+                                    onOpenPassenger = { selectedPassenger = it }
+                                )
                             }
                         }
 
@@ -2077,19 +2148,20 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
                                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                                     Text("نتيجة مراجعة العمولة", fontWeight = FontWeight.Bold)
                                     if (rule == null) {
-                                        Text("الخط مبهم. اختر شركة الطيران لتظهر قاعدة العمولة.", color = Mystery)
+                                        Text("اختر شركة الطيران ثم حدد قاعدة العمولة.", color = Mystery)
                                     } else {
                                         Text(ruleLabel(rule))
+                                        if (!rule.effectiveFrom.isNullOrBlank()) Text("سارية من " + rule.effectiveFrom, fontSize = 12.sp)
                                         rule.note?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                                     }
                                     commission.expectedCommission?.let {
                                         Text(
-                                            if (rule?.kind == RuleKind.FIXED_PER_PASSENGER) "رسم الإصدار المتوقع: ${formatMoney(it, edit.currency)}"
-                                            else "العمولة المتوقعة: ${formatMoney(it, edit.currency)}"
+                                            if (rule?.kind == RuleKind.FIXED_PER_PASSENGER) "رسم الإصدار المتوقع: " + formatMoney(it, edit.currency)
+                                            else "العمولة المتوقعة: " + formatMoney(it, edit.currency)
                                         )
                                     }
-                                    commission.expectedSettlement?.let { Text("التسديد المتوقع: ${formatMoney(it, edit.currency)}") }
-                                    commission.difference?.let { Text("الفرق: ${formatMoney(it, edit.currency)}") }
+                                    commission.expectedSettlement?.let { Text("التسديد المتوقع: " + formatMoney(it, edit.currency)) }
+                                    commission.difference?.let { Text("الفرق: " + formatMoney(it, edit.currency)) }
                                     Text(
                                         commission.explanation,
                                         color = when {
@@ -2098,6 +2170,10 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
                                             else -> Bad
                                         }
                                     )
+                                    edit.commissionRuleSnapshot?.let {
+                                        HorizontalDivider()
+                                        Text("Snapshot المراجعة محفوظ", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                                    }
                                 }
                             }
                         }
@@ -2106,15 +2182,29 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
                     if (edit.type == TxType.VISA || (edit.type == TxType.VOID && edit.visaCountry != null)) {
                         item {
                             Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
-                                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                                     Text("الفيزا: " + (edit.visaCountry ?: "غير محددة"), fontWeight = FontWeight.Bold)
                                     Text(if (edit.type == TxType.VOID) "الحالة: ملغاة" else "الحالة: بيع فيزا")
                                     details.forEach { d ->
-                                        Text(
-                                            "• ${d.passenger.name}" +
-                                                (d.passenger.passport?.let { " • $it" } ?: "") +
-                                                (d.amount?.let { " • ${formatMoney(it, edit.currency)}" } ?: "")
-                                        )
+                                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                d.passenger.name,
+                                                Modifier.weight(1f).clickable { selectedPassenger = d.passenger },
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            d.amount?.let { Text(formatMoney(it, edit.currency)) }
+                                            IconButton(onClick = { copyToClipboard(context, "الاسم", d.passenger.name) }, modifier = Modifier.size(30.dp)) {
+                                                Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
+                                            }
+                                        }
+                                    }
+                                    if (details.size > 1 && responsible == null) {
+                                        OutlinedButton(onClick = { responsiblePicker = true }, modifier = Modifier.fillMaxWidth()) {
+                                            Icon(Icons.Rounded.SupervisorAccount, null)
+                                            Spacer(Modifier.width(5.dp))
+                                            Text("تعيين مسؤول لهذه المعاملة")
+                                        }
                                     }
                                 }
                             }
@@ -2122,20 +2212,60 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
                     }
 
                     if (edit.type == TxType.CHANGE) {
-                        item { SettingsInfoCard("تغيير", "يسجل ويراجع فقط؛ لا يتم التحقق رياضيًا من رسم التغيير.") }
+                        item { SettingsInfoCard("تغيير", "يسجل ويراجع فقط؛ لا يظهر Discount ولا يتم فرض معادلة رسم التغيير.") }
                     }
                     if (edit.type == TxType.REFUND) {
-                        item { SettingsInfoCard("استرجاع", "يسجل ويراجع فقط؛ لا يتم فرض معادلة استرجاع تلقائية.") }
+                        item { SettingsInfoCard("استرجاع", "يسجل ويراجع فقط؛ لا يظهر Discount ولا يتم فرض معادلة استرجاع تلقائية.") }
+                    }
+                    if (edit.type == TxType.PAYMENT) {
+                        item {
+                            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("رابط التسديد / المرفق", fontWeight = FontWeight.Bold)
+                                    OutlinedTextField(
+                                        edit.externalLink.orEmpty(),
+                                        { edit = edit.copy(externalLink = it.ifBlank { null }) },
+                                        Modifier.fillMaxWidth(),
+                                        label = { Text("ألصق رابط الإيصال أو المستند") },
+                                        minLines = 2
+                                    )
+                                    if (edit.externalLink.orEmpty().startsWith("http")) {
+                                        OutlinedButton(
+                                            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(edit.externalLink))) },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(Icons.Rounded.OpenInNew, null)
+                                            Spacer(Modifier.width(5.dp))
+                                            Text("فتح الرابط")
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     if (related.isNotEmpty()) {
                         item {
-                            Text("عمليات أخرى بنفس PNR", fontWeight = FontWeight.Bold)
+                            Text("العمليات المرتبطة", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Text("التذكرة الأصلية والتغييرات والاسترجاعات والإلغاء المرتبط بنفس PNR/رقم التذكرة.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 related.forEach { r ->
                                     AssistChip(
                                         onClick = { onNext(r.id) },
-                                        label = { Text("${labelFor(r.type)} #${r.operationNo ?: "—"}") }
+                                        label = { Text(labelFor(r.type) + " #" + (r.operationNo ?: "—")) },
+                                        leadingIcon = {
+                                            Icon(
+                                                when (r.type) {
+                                                    TxType.TICKET -> Icons.Rounded.ConfirmationNumber
+                                                    TxType.CHANGE -> Icons.Rounded.SwapHoriz
+                                                    TxType.REFUND -> Icons.Rounded.Replay
+                                                    TxType.VOID -> Icons.Rounded.Cancel
+                                                    else -> Icons.Rounded.Link
+                                                },
+                                                null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
                                     )
                                 }
                             }
@@ -2174,40 +2304,71 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
                     OutlinedButton(
                         modifier = Modifier.weight(1f),
                         onClick = {
-                            val type = vm.setting("issuer_contact_type", "GROUP")
-                            if (type == "GROUP") {
-                                val groupUrl = vm.setting(
-                                    "issuer_group_url",
-                                    "https://chat.whatsapp.com/CSubCIjAE5Y0qnzWOI5Z6K?s=cl&p=a&mlu=4&ilr=4"
-                                ).trim()
-                                if (groupUrl.startsWith("https://chat.whatsapp.com/")) {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(groupUrl)))
+                            when {
+                                edit.type == TxType.VISA || (edit.type == TxType.VOID && edit.visaCountry != null) -> {
+                                    val link = vm.setting("visa_link", "").trim()
+                                    if (link.startsWith("http")) context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
                                 }
-                            } else {
-                                val phone = vm.setting("issuer_whatsapp", "").filter(Char::isDigit)
-                                if (phone.isNotBlank()) {
-                                    val text = Uri.encode("PNR ${edit.pnr.orEmpty()} • عملية ${edit.operationNo.orEmpty()}")
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone?text=$text")))
+                                edit.type == TxType.PAYMENT -> {
+                                    val phone = vm.setting("accountant_whatsapp", "").filter(Char::isDigit)
+                                    if (phone.isNotBlank()) {
+                                        val msg = Uri.encode(
+                                            "تسديد #" + edit.operationNo.orEmpty() + " • " +
+                                                formatMoney(edit.amount, edit.currency) + " • " + edit.transactionDate.orEmpty()
+                                        )
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone + "?text=" + msg)))
+                                    }
                                 }
+                                else -> openIssuerContact(context, vm, edit)
                             }
                         }
                     ) {
-                        Icon(Icons.Rounded.Chat, null)
+                        Icon(
+                            when {
+                                edit.type == TxType.VISA || (edit.type == TxType.VOID && edit.visaCountry != null) -> Icons.Rounded.Description
+                                edit.type == TxType.PAYMENT -> Icons.Rounded.AccountCircle
+                                else -> Icons.Rounded.Chat
+                            },
+                            null
+                        )
                         Spacer(Modifier.width(4.dp))
-                        Text("جهة الإصدار")
+                        Text(
+                            when {
+                                edit.type == TxType.VISA || (edit.type == TxType.VOID && edit.visaCountry != null) -> "رابط الفيز"
+                                edit.type == TxType.PAYMENT -> vm.setting("accountant_name", "المحاسب")
+                                else -> "جهة الإصدار"
+                            }
+                        )
                     }
 
                     OutlinedButton(
                         modifier = Modifier.weight(1f),
-                        enabled = customerPhone.isNotBlank(),
+                        enabled = details.isNotEmpty() || responsible != null,
                         onClick = {
-                            val text = Uri.encode("PNR ${edit.pnr.orEmpty()}")
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$customerPhone?text=$text")))
+                            val current = responsible
+                            if (current == null) {
+                                responsiblePicker = true
+                            } else {
+                                val phone = current.phone.orEmpty().filter(Char::isDigit)
+                                if (phone.isNotBlank()) {
+                                    val msg = Uri.encode("PNR " + edit.pnr.orEmpty())
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone + "?text=" + msg)))
+                                } else {
+                                    selectedPassenger = current
+                                }
+                            }
                         }
                     ) {
-                        Icon(Icons.Rounded.Person, null)
+                        Icon(if (responsible?.phone.orEmpty().filter(Char::isDigit).isNotBlank()) Icons.Rounded.Chat else Icons.Rounded.SupervisorAccount, null)
                         Spacer(Modifier.width(4.dp))
-                        Text("الزبون")
+                        Text(
+                            when {
+                                responsible == null -> "تحديد المسؤول"
+                                responsible.phone.orEmpty().filter(Char::isDigit).isNotBlank() -> responsible.name + " • واتساب"
+                                else -> "المسؤول: " + responsible.name
+                            },
+                            maxLines = 2
+                        )
                     }
 
                     OutlinedButton(
@@ -2243,30 +2404,60 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
     }
 
     if (airlinePicker) {
+        AirlineSelectionDialog(
+            airlines = airlines,
+            selected = edit.airline,
+            allowUnknown = true,
+            onDismiss = { airlinePicker = false },
+            onSelect = { chosen ->
+                edit = edit.copy(airline = chosen?.name)
+                vm.setAirline(edit.id, chosen?.name)
+                airlinePicker = false
+            }
+        )
+    }
+
+    if (commissionEditor && !edit.airline.isNullOrBlank()) {
+        CommissionRuleDialog(
+            vm = vm,
+            initial = rule ?: CommissionRule(
+                id = "new",
+                airline = edit.airline.orEmpty(),
+                kind = RuleKind.PRIVATE_MANUAL,
+                value = 0.0
+            ),
+            airlines = airlines,
+            onDismiss = { commissionEditor = false }
+        )
+    }
+
+    if (responsiblePicker) {
         AlertDialog(
-            onDismissRequest = { airlinePicker = false },
-            title = { Text("اختيار شركة الطيران") },
+            onDismissRequest = { responsiblePicker = false },
+            title = { Text("تحديد المسؤول") },
             text = {
-                LazyColumn(Modifier.heightIn(max = 480.dp)) {
-                    item {
-                        TextButton(onClick = {
-                            edit = edit.copy(airline = null)
-                            vm.setAirline(edit.id, null)
-                            airlinePicker = false
-                        }) { Text("مبهم / غير محدد") }
-                    }
-                    items(rules, key = { it.id }) { r ->
-                        TextButton(
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = {
-                                edit = edit.copy(airline = r.airline)
-                                vm.setAirline(edit.id, r.airline)
-                                airlinePicker = false
-                            }
-                        ) {
-                            Column(Modifier.fillMaxWidth()) {
-                                Text(r.airline, fontWeight = FontWeight.Bold)
-                                Text(ruleLabel(r), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (!edit.pnr.isNullOrBlank()) "اختيار أحد مسافري PNR سيضم بقية المسافرين تحته تلقائيًا."
+                        else "اختيار مسؤول سيضم بقية الأشخاص في هذه العملية تحته.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                        items(pnrPassengers, key = { it.id }) { p ->
+                            TextButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    if (!edit.pnr.isNullOrBlank()) vm.assignResponsibleForPnr(edit.pnr.orEmpty(), p.id)
+                                    else vm.assignResponsibleForTransaction(edit.id, p.id)
+                                    responsiblePicker = false
+                                }
+                            ) {
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Rounded.Person, null)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(p.name, Modifier.weight(1f))
+                                    if (!p.phone.isNullOrBlank()) Icon(Icons.Rounded.Chat, null, modifier = Modifier.size(16.dp))
+                                }
                             }
                         }
                     }
@@ -2274,6 +2465,22 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
             },
             confirmButton = {}
         )
+    }
+
+    selectedPassenger?.let { p ->
+        key("profile-" + p.id) {
+            PassengerDetailDialog(
+                vm = vm,
+                passenger = p,
+                allPassengers = allPassengers,
+                onDismiss = { selectedPassenger = null },
+                onOpenTransaction = {
+                    selectedPassenger = null
+                    onNext(it)
+                },
+                onOpenPassenger = { selectedPassenger = it }
+            )
+        }
     }
 }
 
