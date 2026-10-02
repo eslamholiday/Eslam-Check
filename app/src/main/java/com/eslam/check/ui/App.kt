@@ -466,21 +466,56 @@ private fun TransactionCard(tx: Transaction, onDetail: () -> Unit, onReview: () 
 private fun PassengersScreen(vm: MainViewModel) {
     val passengers by vm.passengers.collectAsState()
     var search by remember { mutableStateOf("") }
-    val filtered = passengers.filter {
-        search.isBlank() || it.name.contains(search, true) || it.passport.orEmpty().contains(search, true) || it.id.contains(search, true)
+    var category by remember { mutableStateOf(PassengerCategory.ALL) }
+    var selected by remember { mutableStateOf<Passenger?>(null) }
+
+    val filtered = remember(passengers, search, category) {
+        passengers.filter { p ->
+            val matches = search.isBlank() ||
+                p.name.contains(search, true) ||
+                p.passport.orEmpty().contains(search, true) ||
+                p.phone.orEmpty().contains(search, true) ||
+                p.id.contains(search, true)
+            val classOk = when (category) {
+                PassengerCategory.ALL -> true
+                PassengerCategory.RESPONSIBLE -> p.isResponsible
+                PassengerCategory.DEPENDENT -> p.responsibleId != null
+                PassengerCategory.INDEPENDENT -> !p.isResponsible && p.responsibleId == null
+            }
+            matches && classOk
+        }
     }
 
     Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("المسافرون", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text("المسؤول يبقى مسافرًا بنفس الـID ويمكن ربط مسافرين تابعين له.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
         OutlinedTextField(
             search, { search = it }, Modifier.fillMaxWidth(),
-            label = { Text("بحث بالاسم / الجواز / ID") },
+            label = { Text("بحث بالاسم / الجواز / الهاتف / ID") },
             leadingIcon = { Icon(Icons.Rounded.Search, null) },
             singleLine = true
         )
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf(
+                PassengerCategory.ALL to "الجميع",
+                PassengerCategory.RESPONSIBLE to "المسؤولون",
+                PassengerCategory.DEPENDENT to "التابعون",
+                PassengerCategory.INDEPENDENT to "المستقلون"
+            ).forEach { (key, label) ->
+                FilterChip(selected = category == key, onClick = { category = key }, label = { Text(label) })
+            }
+        }
+
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(filtered, key = { it.id }) { p ->
-                Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth().clickable { selected = p },
+                    shape = RoundedCornerShape(16.dp),
+                    tonalElevation = 1.dp
+                ) {
                     Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
                             Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
@@ -488,15 +523,200 @@ private fun PassengersScreen(vm: MainViewModel) {
                             }
                         }
                         Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text(p.name, fontWeight = FontWeight.Bold)
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(p.name, fontWeight = FontWeight.Bold)
+                                AssistChip(
+                                    onClick = {},
+                                    label = {
+                                        Text(
+                                            when {
+                                                p.isResponsible -> "مسؤول"
+                                                p.responsibleId != null -> "تابع"
+                                                else -> "مستقل"
+                                            },
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                )
+                            }
                             Text("ID: ${p.id.take(8)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             p.passport?.let { Text("جواز: $it", fontSize = 12.sp) }
+                            p.responsibleId?.let { rid ->
+                                vm.passengerById(rid)?.let { Text("المسؤول: ${it.name}", fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary) }
+                            }
                         }
+                        Icon(Icons.Rounded.ChevronLeft, null)
                     }
                 }
             }
         }
+    }
+
+    selected?.let { p ->
+        PassengerDetailDialog(vm, p, passengers, onDismiss = { selected = null })
+    }
+}
+
+@Composable
+private fun PassengerDetailDialog(
+    vm: MainViewModel,
+    passenger: Passenger,
+    allPassengers: List<Passenger>,
+    onDismiss: () -> Unit
+) {
+    var edit by remember(passenger.id, passenger.phone, passenger.passport, passenger.isResponsible, passenger.responsibleId) {
+        mutableStateOf(passenger)
+    }
+    var responsiblePicker by remember { mutableStateOf(false) }
+    var dependentPicker by remember { mutableStateOf(false) }
+    val dependents = remember(allPassengers, passenger.id) { allPassengers.filter { it.responsibleId == passenger.id } }
+    val currentResponsible = edit.responsibleId?.let { id -> allPassengers.firstOrNull { it.id == id } }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.9f), shape = RoundedCornerShape(24.dp)) {
+            Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column {
+                        Text(edit.name, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            when {
+                                edit.isResponsible -> "مسؤول"
+                                edit.responsibleId != null -> "تابع"
+                                else -> "مستقل"
+                            },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, "إغلاق") }
+                }
+
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    item {
+                        OutlinedTextField(edit.name, { edit = edit.copy(name = it) }, Modifier.fillMaxWidth(), label = { Text("الاسم") })
+                    }
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                edit.phone.orEmpty(), { edit = edit.copy(phone = it) }, Modifier.weight(1f),
+                                label = { Text("الهاتف / واتساب") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
+                            )
+                            OutlinedTextField(
+                                edit.passport.orEmpty(), { edit = edit.copy(passport = it) }, Modifier.weight(1f),
+                                label = { Text("الجواز") }
+                            )
+                        }
+                    }
+                    item {
+                        Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                            Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("تعيين كمسؤول", fontWeight = FontWeight.Bold)
+                                    Text("يبقى ضمن جميع المسافرين وتظهر داخله قائمة التابعين.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Switch(edit.isResponsible, { edit = edit.copy(isResponsible = it) })
+                            }
+                        }
+                    }
+                    item {
+                        OutlinedButton(onClick = { responsiblePicker = true }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Rounded.SupervisorAccount, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("المسؤول الحالي: " + (currentResponsible?.name ?: "لا يوجد"))
+                        }
+                    }
+                    if (edit.responsibleId != null) {
+                        item {
+                            OutlinedTextField(
+                                edit.responsibleRelation.orEmpty(),
+                                { edit = edit.copy(responsibleRelation = it) },
+                                Modifier.fillMaxWidth(),
+                                label = { Text("صلة العلاقة - اختياري") }
+                            )
+                        }
+                    }
+                    if (edit.isResponsible) {
+                        item {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("المسافرون التابعون (${dependents.size})", fontWeight = FontWeight.Bold)
+                                TextButton(onClick = { dependentPicker = true }) {
+                                    Icon(Icons.Rounded.PersonAdd, null)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("إضافة تابع")
+                                }
+                            }
+                        }
+                        items(dependents, key = { it.id }) { d ->
+                            Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(d.name, modifier = Modifier.weight(1f))
+                                    TextButton(onClick = { vm.assignResponsible(d.id, null) }) { Text("فك الربط") }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        vm.updatePassenger(edit)
+                        if (edit.responsibleId != passenger.responsibleId || edit.responsibleRelation != passenger.responsibleRelation) {
+                            vm.assignResponsible(edit.id, edit.responsibleId, edit.responsibleRelation)
+                        }
+                        onDismiss()
+                    }
+                ) {
+                    Icon(Icons.Rounded.Save, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("حفظ")
+                }
+            }
+        }
+    }
+
+    if (responsiblePicker) {
+        AlertDialog(
+            onDismissRequest = { responsiblePicker = false },
+            title = { Text("اختيار المسؤول") },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    item {
+                        TextButton(onClick = {
+                            edit = edit.copy(responsibleId = null, responsibleRelation = null)
+                            responsiblePicker = false
+                        }) { Text("بدون مسؤول") }
+                    }
+                    items(allPassengers.filter { it.isResponsible && it.id != edit.id }, key = { it.id }) { p ->
+                        TextButton(onClick = {
+                            edit = edit.copy(responsibleId = p.id)
+                            responsiblePicker = false
+                        }) { Text(p.name) }
+                    }
+                }
+            },
+            confirmButton = {}
+        )
+    }
+
+    if (dependentPicker) {
+        AlertDialog(
+            onDismissRequest = { dependentPicker = false },
+            title = { Text("إضافة مسافر تابع") },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    items(allPassengers.filter { it.id != edit.id && it.responsibleId != edit.id }, key = { it.id }) { p ->
+                        TextButton(onClick = {
+                            vm.assignResponsible(p.id, edit.id)
+                            dependentPicker = false
+                        }) {
+                            Text(p.name + if (p.responsibleId != null) " • مرتبط بمسؤول آخر" else "")
+                        }
+                    }
+                }
+            },
+            confirmButton = {}
+        )
     }
 }
 
