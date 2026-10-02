@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.eslam.check.data.*
 import com.eslam.check.parser.BestChoiceParser
+import com.eslam.check.parser.BridgeParser
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
@@ -53,6 +54,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearMessage() { _message.value = null }
+
+    fun previewBridge(text: String): BridgeParseResult = BridgeParser.parse(text)
+
+    fun importBridge(result: BridgeParseResult) {
+        if (!result.canImport) {
+            _message.value = "تعذر الاستيراد: " + result.errors.firstOrNull().orEmpty()
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            try {
+                val counts = withContext(Dispatchers.IO) {
+                    var created = 0
+                    var updated = 0
+                    result.transactions.forEach { parsed ->
+                        val (_, isNew) = db.upsertParsed(parsed, SourceType.BRIDGE)
+                        if (isNew) created++ else updated++
+                    }
+                    db.setSetting("last_bridge_batch", result.batchId)
+                    db.setSetting("last_bridge_mode", result.mode)
+                    created to updated
+                }
+                _message.value = "ECX: " + counts.first + " جديدة، " + counts.second + " موجودة/محدثة"
+                refresh()
+            } catch (e: Exception) {
+                _message.value = "فشل استيراد ECX: " + (e.message ?: "خطأ غير معروف")
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
 
     fun importPdf(uri: Uri, forcedCurrency: Currency?) {
         viewModelScope.launch {

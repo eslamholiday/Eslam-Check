@@ -136,6 +136,8 @@ fun EslamCheckApp(vm: MainViewModel) {
 private fun DashboardScreen(vm: MainViewModel, onOpenReview: () -> Unit, onDetail: (String) -> Unit) {
     val stats by vm.stats.collectAsState()
     val txs by vm.transactions.collectAsState()
+    var bridgeOpen by remember { mutableStateOf(false) }
+    var showPdfExperimental by remember { mutableStateOf(false) }
     var importCurrency by remember { mutableStateOf<Currency?>(null) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.importPdf(uri, importCurrency)
@@ -160,24 +162,36 @@ private fun DashboardScreen(vm: MainViewModel, onOpenReview: () -> Unit, onDetai
         item {
             Surface(shape = RoundedCornerShape(18.dp), tonalElevation = 2.dp) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("استيراد كشف Best Choice", fontWeight = FontWeight.Bold)
-                    Text("ارفع كشف الدينار أو الدولار بشكل منفصل.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = {
-                            importCurrency = Currency.IQD
-                            launcher.launch(arrayOf("application/pdf"))
-                        }) {
-                            Icon(Icons.Rounded.UploadFile, null)
-                            Spacer(Modifier.width(5.dp))
-                            Text("دينار")
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Rounded.Hub, null, tint = MaterialTheme.colorScheme.secondary)
+                        Column {
+                            Text("Eslam Bridge", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Text("الصق نص ECX الذي أرسله لك ChatGPT. يقبل الدولار والدينار معًا.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        OutlinedButton(onClick = {
-                            importCurrency = Currency.USD
-                            launcher.launch(arrayOf("application/pdf"))
-                        }) {
-                            Icon(Icons.Rounded.UploadFile, null)
-                            Spacer(Modifier.width(5.dp))
-                            Text("دولار")
+                    }
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { bridgeOpen = true }
+                    ) {
+                        Icon(Icons.Rounded.ContentPaste, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("لصق واستيراد نص ECX")
+                    }
+                    if (vm.setting("bridge_pdf_experimental", "false").toBoolean()) {
+                        TextButton(onClick = { showPdfExperimental = !showPdfExperimental }) {
+                            Text(if (showPdfExperimental) "إخفاء استيراد PDF التجريبي" else "استيراد PDF تجريبي")
+                        }
+                        if (showPdfExperimental) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = {
+                                    importCurrency = Currency.IQD
+                                    launcher.launch(arrayOf("application/pdf"))
+                                }) { Text("PDF دينار") }
+                                OutlinedButton(onClick = {
+                                    importCurrency = Currency.USD
+                                    launcher.launch(arrayOf("application/pdf"))
+                                }) { Text("PDF دولار") }
+                            }
                         }
                     }
                 }
@@ -191,6 +205,94 @@ private fun DashboardScreen(vm: MainViewModel, onOpenReview: () -> Unit, onDetai
         }
         items(txs.take(8), key = { it.id }) { tx ->
             TransactionCard(tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
+        }
+    }
+
+    if (bridgeOpen) {
+        BridgeImportDialog(vm) { bridgeOpen = false }
+    }
+}
+
+@Composable
+private fun BridgeImportDialog(vm: MainViewModel, onDismiss: () -> Unit) {
+    var text by remember { mutableStateOf("") }
+    var preview by remember { mutableStateOf<BridgeParseResult?>(null) }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            Modifier.fillMaxWidth(0.97f).fillMaxHeight(0.94f),
+            shape = RoundedCornerShape(24.dp)
+        ) {
+            Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column {
+                        Text("Eslam Bridge", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                        Text("ECX v1", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, "إغلاق") }
+                }
+
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = {
+                        text = it
+                        preview = null
+                    },
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    label = { Text("الصق النص هنا") },
+                    placeholder = { Text("ECX|1\nB|...\nL|USD|...\nT|USD|...") }
+                )
+
+                preview?.let { p ->
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (p.canImport) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                        else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                if (p.canImport) "النص صالح للاستيراد ✓" else "يوجد خطأ في النص",
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text("Batch: " + p.batchId.ifBlank { "بدون معرف" })
+                            Text("USD: " + p.usdCount + " • IQD: " + p.iqdCount + " • الإجمالي: " + p.transactions.size)
+                            p.ledgers.forEach { ledger ->
+                                Text(
+                                    ledger.currency.name + "  " + ledger.rangeFrom + " → " + ledger.rangeTo +
+                                        "  |  Open " + ledger.openingBalance + "  |  Close " + ledger.closingBalance,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            p.errors.take(4).forEach { Text("• " + it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+                            p.warnings.take(4).forEach { Text("• " + it, color = Warn, fontSize = 12.sp) }
+                        }
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        enabled = text.isNotBlank(),
+                        onClick = { preview = vm.previewBridge(text) }
+                    ) {
+                        Icon(Icons.Rounded.FactCheck, null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("فحص النص")
+                    }
+                    Button(
+                        modifier = Modifier.weight(1f),
+                        enabled = preview?.canImport == true,
+                        onClick = {
+                            preview?.let(vm::importBridge)
+                            onDismiss()
+                        }
+                    ) {
+                        Icon(Icons.Rounded.DownloadDone, null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("اعتماد")
+                    }
+                }
+            }
         }
     }
 }
@@ -345,30 +447,183 @@ private fun PaymentsScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
 
 @Composable
 private fun MoreScreen(vm: MainViewModel) {
-    val rules by vm.rules.collectAsState()
-    var issuer by remember { mutableStateOf(vm.setting("issuer_whatsapp", "")) }
-    var usdTolerance by remember { mutableStateOf(vm.setting("usd_tolerance", "1.0")) }
-    var iqdTolerance by remember { mutableStateOf(vm.setting("iqd_tolerance", "1000")) }
+    var page by remember { mutableStateOf("root") }
+
+    when (page) {
+        "root" -> SettingsRoot { page = it }
+        "bridge" -> BridgeSettings(vm) { page = "root" }
+        "review" -> ReviewSettings(vm) { page = "root" }
+        "commissions" -> CommissionSettings(vm) { page = "root" }
+        "whatsapp" -> WhatsAppSettings(vm) { page = "root" }
+        "people" -> InfoSettingsPage(
+            title = "المسافرون والعملاء",
+            items = listOf(
+                "Autocomplete للأسماء والمسافرين",
+                "ID داخلي ثابت لكل مسافر",
+                "العميل المسؤول اختياري",
+                "اقتراح الربط بدون دمج تلقائي"
+            ),
+            onBack = { page = "root" }
+        )
+        "payments" -> InfoSettingsPage(
+            title = "التسديدات",
+            items = listOf(
+                "مطابقة التسديدات تبقى تقريبية",
+                "التأكيد النهائي يدوي",
+                "يمكن ربط أكثر من إيصال بتسديد واحد",
+                "التسديدات تظهر بقسم مستقل"
+            ),
+            onBack = { page = "root" }
+        )
+        "appearance" -> InfoSettingsPage(
+            title = "الشكل والواجهة",
+            items = listOf(
+                "الوضع الداكن والفاتح يتبع النظام",
+                "ألوان الحالات: صحيح / تحذير / مبهم",
+                "الواجهة الأساسية تبقى خفيفة",
+                "الإعدادات المتقدمة لا تظهر في الصفحة الرئيسية"
+            ),
+            onBack = { page = "root" }
+        )
+        "data" -> InfoSettingsPage(
+            title = "البيانات والنسخ",
+            items = listOf(
+                "البيانات محلية على الهاتف",
+                "ECX هو مصدر الاستيراد الأساسي",
+                "العمليات القديمة لا يعاد إدخالها",
+                "رقم العملية + العملة هما مفتاح المطابقة"
+            ),
+            onBack = { page = "root" }
+        )
+        "advanced" -> InfoSettingsPage(
+            title = "متقدم",
+            items = listOf(
+                "ECX v1 هو بروتوكول Eslam Bridge الحالي",
+                "Balance و Sequence معلومات كشف وليسا هوية للعملية",
+                "New Change يترجم إلى Change مع الاحتفاظ بكود المصدر",
+                "New Refund يترجم إلى Refund مع الاحتفاظ بكود المصدر",
+                "عملية الصفر غير الواضحة تذهب إلى مبهم"
+            ),
+            onBack = { page = "root" }
+        )
+    }
+}
+
+@Composable
+private fun SettingsRoot(onOpen: (String) -> Unit) {
+    val entries = listOf(
+        Triple("bridge", "Eslam Bridge", Icons.Rounded.Hub),
+        Triple("review", "المراجعة والكشوفات", Icons.Rounded.FactCheck),
+        Triple("commissions", "التذاكر والعمولات", Icons.Rounded.Percent),
+        Triple("people", "المسافرون والعملاء", Icons.Rounded.Groups),
+        Triple("payments", "التسديدات", Icons.Rounded.Payments),
+        Triple("whatsapp", "واتساب", Icons.Rounded.Chat),
+        Triple("appearance", "الشكل والواجهة", Icons.Rounded.Palette),
+        Triple("data", "البيانات والنسخ", Icons.Rounded.Storage),
+        Triple("advanced", "متقدم", Icons.Rounded.Tune)
+    )
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Text("المزيد والإعدادات", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Text("إعدادات متشعبة بدل صفحة طويلة واحدة.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        items(entries) { e ->
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable { onOpen(e.first) },
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 1.dp
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(e.third, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(12.dp))
+                    Text(e.second, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                    Icon(Icons.Rounded.ChevronLeft, null)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsHeader(title: String, onBack: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) { Icon(Icons.Rounded.ArrowForward, "رجوع") }
+        Text(title, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun BridgeSettings(vm: MainViewModel, onBack: () -> Unit) {
+    var pdfExperimental by remember { mutableStateOf(vm.setting("bridge_pdf_experimental", "false").toBoolean()) }
+    var rejectErrors by remember { mutableStateOf(vm.setting("bridge_reject_on_error", "true").toBoolean()) }
 
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item { Text("المزيد والإعدادات", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
+        item { SettingsHeader("Eslam Bridge", onBack) }
         item {
-            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 2.dp) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("واتساب جهة الإصدار", fontWeight = FontWeight.Bold)
-                    OutlinedTextField(issuer, { issuer = it }, Modifier.fillMaxWidth(), label = { Text("رقم مع رمز الدولة") }, singleLine = true)
-                    Button(onClick = { vm.setSetting("issuer_whatsapp", issuer) }) { Text("حفظ") }
-                }
+            SettingsInfoCard("لغة الاستيراد", "ECX v1 • نص واحد يمكن أن يحتوي USD + IQD")
+        }
+        item {
+            SettingSwitchRow(
+                "رفض النص عند وجود خطأ هيكلي",
+                rejectErrors
+            ) {
+                rejectErrors = it
+                vm.setSetting("bridge_reject_on_error", it.toString())
             }
         }
         item {
-            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 2.dp) {
+            SettingSwitchRow(
+                "إظهار استيراد PDF التجريبي",
+                pdfExperimental
+            ) {
+                pdfExperimental = it
+                vm.setSetting("bridge_pdf_experimental", it.toString())
+            }
+        }
+        item {
+            SettingsInfoCard(
+                "المطابقة",
+                "رقم العملية + العملة. تغيّر Balance أو ترتيب الصفوف وحده لا يعتبر تغييرًا في العملية."
+            )
+        }
+        item {
+            SettingsInfoCard(
+                "العمليات الصفرية",
+                "إذا كان الإلغاء واضحًا في المصدر تدخل كإلغاء. إذا لم يكن واضحًا تدخل إلى الحالات المبهمة."
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReviewSettings(vm: MainViewModel, onBack: () -> Unit) {
+    var usdTolerance by remember { mutableStateOf(vm.setting("usd_tolerance", "1.0")) }
+    var iqdTolerance by remember { mutableStateOf(vm.setting("iqd_tolerance", "1000")) }
+    var reviewLock by remember { mutableStateOf(vm.setting("review_lock", "false").toBoolean()) }
+    var pageSize by remember { mutableStateOf(vm.setting("page_size", "20")) }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SettingsHeader("المراجعة والكشوفات", onBack) }
+        item {
+            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("هامش فرق الحساب", fontWeight = FontWeight.Bold)
+                    Text("هامش الحساب", fontWeight = FontWeight.Bold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(usdTolerance, { usdTolerance = it }, Modifier.weight(1f), label = { Text("USD") })
                         OutlinedTextField(iqdTolerance, { iqdTolerance = it }, Modifier.weight(1f), label = { Text("IQD") })
@@ -380,7 +635,40 @@ private fun MoreScreen(vm: MainViewModel) {
                 }
             }
         }
-        item { Text("قواعد العمولات", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+        item {
+            Text("عدد العناصر افتراضيًا", fontWeight = FontWeight.Bold)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("10", "20", "30", "50", "100").forEach { size ->
+                    FilterChip(
+                        selected = pageSize == size,
+                        onClick = {
+                            pageSize = size
+                            vm.setSetting("page_size", size)
+                        },
+                        label = { Text(size) }
+                    )
+                }
+            }
+        }
+        item {
+            SettingSwitchRow("قفل العملية بعد المراجعة", reviewLock) {
+                reviewLock = it
+                vm.setSetting("review_lock", it.toString())
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
+    val rules by vm.rules.collectAsState()
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item { SettingsHeader("التذاكر والعمولات", onBack) }
+        item { SettingsInfoCard("قاعدة الحساب", "النسبة المئوية تطبق على Base Fare، والرسوم الثابتة تطبق لكل مسافر.") }
         items(rules, key = { it.id }) { rule ->
             Surface(shape = RoundedCornerShape(14.dp), tonalElevation = 1.dp) {
                 Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -389,11 +677,64 @@ private fun MoreScreen(vm: MainViewModel) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun WhatsAppSettings(vm: MainViewModel, onBack: () -> Unit) {
+    var issuer by remember { mutableStateOf(vm.setting("issuer_whatsapp", "")) }
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SettingsHeader("واتساب", onBack) }
         item {
-            Text(
-                "الأدوات المتقدمة مثل التصدير والنسخ الاحتياطي ووضع الاختبار وسجل التعلم ستبقى تحت هذا القسم بدون ازدحام الواجهة.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("جهة الإصدار", fontWeight = FontWeight.Bold)
+                    OutlinedTextField(issuer, { issuer = it }, Modifier.fillMaxWidth(), label = { Text("رقم مع رمز الدولة") }, singleLine = true)
+                    Button(onClick = { vm.setSetting("issuer_whatsapp", issuer) }) { Text("حفظ") }
+                }
+            }
+        }
+        item { SettingsInfoCard("الأزرار", "داخل العملية يبقى زر جهة الإصدار منفصلًا عن زر العميل.") }
+    }
+}
+
+@Composable
+private fun InfoSettingsPage(title: String, items: List<String>, onBack: () -> Unit) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item { SettingsHeader(title, onBack) }
+        items(items) { item ->
+            SettingsInfoCard(item, "")
+        }
+    }
+}
+
+@Composable
+private fun SettingsInfoCard(title: String, subtitle: String) {
+    Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            if (subtitle.isNotBlank()) Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        }
+    }
+}
+
+@Composable
+private fun SettingSwitchRow(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+        Row(
+            Modifier.fillMaxWidth().padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(title, modifier = Modifier.weight(1f))
+            Switch(checked = checked, onCheckedChange = onChange)
         }
     }
 }
