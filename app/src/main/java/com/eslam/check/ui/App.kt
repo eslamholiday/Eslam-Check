@@ -1670,18 +1670,26 @@ private fun PaymentsSettings(vm: MainViewModel, onBack: () -> Unit) {
 private fun AppearanceSettings(vm: MainViewModel, onBack: () -> Unit) {
     val revision by vm.settingsRevision.collectAsState()
     var preset by remember(revision) { mutableStateOf(vm.setting("theme_preset", "NAVY")) }
-    var fontChoice by remember(revision) { mutableStateOf(vm.setting("font_choice", "SANS")) }
-    var fontScale by remember(revision) { mutableStateOf(vm.setting("font_scale", "1.0").toFloatOrNull() ?: 1f) }
-    var colorTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val themeKey = preset.uppercase()
+    var fontChoice by remember(revision, themeKey) { mutableStateOf(vm.setting("theme_" + themeKey + "_font", "SANS")) }
+    var fontScale by remember(revision, themeKey) { mutableStateOf(vm.setting("theme_" + themeKey + "_font_scale", "1.0").toFloatOrNull() ?: 1f) }
+    var colorTarget by remember { mutableStateOf<Triple<String, String, String>?>(null) }
+
+    val themeRows = listOf(
+        Triple("theme_" + themeKey + "_primary", "اللون الأساسي", ""),
+        Triple("theme_" + themeKey + "_background", "لون الخلفية", ""),
+        Triple("theme_" + themeKey + "_surface", "لون البطاقات", ""),
+        Triple("theme_" + themeKey + "_text", "لون الخط", "")
+    )
 
     val typeRows = listOf(
-        "color_ticket" to "تذكرة",
-        "color_visa" to "فيزا",
-        "color_change" to "تغيير",
-        "color_refund" to "استرجاع",
-        "color_void" to "إلغاء / Void",
-        "color_payment" to "تسديد",
-        "color_unknown" to "مبهم"
+        Triple("color_ticket", "تذكرة", defaultTypeColor("color_ticket")),
+        Triple("color_visa", "فيزا", defaultTypeColor("color_visa")),
+        Triple("color_change", "تغيير", defaultTypeColor("color_change")),
+        Triple("color_refund", "استرجاع", defaultTypeColor("color_refund")),
+        Triple("color_void", "إلغاء / Void", defaultTypeColor("color_void")),
+        Triple("color_payment", "تسديد", defaultTypeColor("color_payment")),
+        Triple("color_unknown", "مبهم", defaultTypeColor("color_unknown"))
     )
 
     LazyColumn(
@@ -1691,7 +1699,7 @@ private fun AppearanceSettings(vm: MainViewModel, onBack: () -> Unit) {
     ) {
         item { SettingsHeader("الشكل والواجهة", onBack) }
         item {
-            Text("الثيمات", fontWeight = FontWeight.Bold)
+            Text("5 ثيمات قابلة للتعديل", fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf(
                     "NAVY" to "Eslam Navy",
@@ -1711,17 +1719,18 @@ private fun AppearanceSettings(vm: MainViewModel, onBack: () -> Unit) {
                 }
             }
         }
+
         item {
             Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("الخط", fontWeight = FontWeight.Bold)
+                    Text("خط هذا الثيم", fontWeight = FontWeight.Bold)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf("SANS" to "Sans", "SERIF" to "Serif", "MONO" to "Mono").forEach { (key, label) ->
                             FilterChip(
                                 selected = fontChoice == key,
                                 onClick = {
                                     fontChoice = key
-                                    vm.setSetting("font_choice", key)
+                                    vm.setSetting("theme_" + themeKey + "_font", key)
                                 },
                                 label = { Text(label) }
                             )
@@ -1732,25 +1741,50 @@ private fun AppearanceSettings(vm: MainViewModel, onBack: () -> Unit) {
                         value = fontScale,
                         onValueChange = {
                             fontScale = it
-                            vm.setSetting("font_scale", it.toString())
+                            vm.setSetting("theme_" + themeKey + "_font_scale", it.toString())
                         },
                         valueRange = 0.85f..1.30f
                     )
                 }
             }
         }
-        item { Text("ألوان أنواع العمليات", fontWeight = FontWeight.Bold, fontSize = 18.sp) }
-        items(typeRows) { row ->
-            val value = vm.setting(row.first, defaultTypeColor(row.first))
+
+        item { Text("ألوان هذا الثيم", fontWeight = FontWeight.Bold, fontSize = 18.sp) }
+        items(themeRows) { row ->
+            val value = vm.setting(row.first, "")
+            val preview = when {
+                value.isNotBlank() -> colorFromHex(value)
+                row.first.endsWith("_primary") -> MaterialTheme.colorScheme.primary
+                row.first.endsWith("_background") -> MaterialTheme.colorScheme.background
+                row.first.endsWith("_surface") -> MaterialTheme.colorScheme.surface
+                else -> MaterialTheme.colorScheme.onSurface
+            } ?: MaterialTheme.colorScheme.primary
             Surface(
                 modifier = Modifier.fillMaxWidth().clickable { colorTarget = row },
                 shape = RoundedCornerShape(14.dp),
                 tonalElevation = 1.dp
             ) {
                 Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier.size(30.dp).background(colorFromHex(value) ?: MaterialTheme.colorScheme.primary, CircleShape)
-                    )
+                    Box(Modifier.size(30.dp).background(preview, CircleShape))
+                    Spacer(Modifier.width(10.dp))
+                    Text(row.second, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                    Text(if (value.isBlank()) "افتراضي" else value, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Rounded.Palette, null)
+                }
+            }
+        }
+
+        item { Text("ألوان أنواع العمليات", fontWeight = FontWeight.Bold, fontSize = 18.sp) }
+        items(typeRows) { row ->
+            val value = vm.setting(row.first, row.third)
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable { colorTarget = row },
+                shape = RoundedCornerShape(14.dp),
+                tonalElevation = 1.dp
+            ) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(30.dp).background(colorFromHex(value) ?: MaterialTheme.colorScheme.primary, CircleShape))
                     Spacer(Modifier.width(10.dp))
                     Text(row.second, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                     Text(value, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1759,20 +1793,31 @@ private fun AppearanceSettings(vm: MainViewModel, onBack: () -> Unit) {
                 }
             }
         }
+
         item {
-            OutlinedButton(
-                modifier = Modifier.fillMaxWidth(),
-                onClick = {
-                    typeRows.forEach { vm.setSetting(it.first, defaultTypeColor(it.first)) }
-                }
-            ) { Text("استعادة ألوان العمليات الافتراضية") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        themeRows.forEach { vm.setSetting(it.first, "") }
+                        vm.setSetting("theme_" + themeKey + "_font", "SANS")
+                        vm.setSetting("theme_" + themeKey + "_font_scale", "1.0")
+                    }
+                ) { Text("إعادة الثيم") }
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = { typeRows.forEach { vm.setSetting(it.first, it.third) } }
+                ) { Text("ألوان العمليات") }
+            }
         }
     }
 
     colorTarget?.let { target ->
+        val current = vm.setting(target.first, target.third)
         ColorChoiceDialog(
             title = "لون " + target.second,
-            current = vm.setting(target.first, defaultTypeColor(target.first)),
+            current = current,
+            allowDefault = target.third.isBlank(),
             onDismiss = { colorTarget = null },
             onSelect = {
                 vm.setSetting(target.first, it)
@@ -1786,18 +1831,25 @@ private fun AppearanceSettings(vm: MainViewModel, onBack: () -> Unit) {
 private fun ColorChoiceDialog(
     title: String,
     current: String,
+    allowDefault: Boolean = false,
     onDismiss: () -> Unit,
     onSelect: (String) -> Unit
 ) {
     val palette = listOf(
         "#2F80ED", "#56CCF2", "#7B61FF", "#9B51E0", "#27AE60", "#6FCF97",
-        "#F2994A", "#F2C94C", "#EB5757", "#D4A84F", "#607D8B", "#90A4AE"
+        "#F2994A", "#F2C94C", "#EB5757", "#D4A84F", "#607D8B", "#90A4AE",
+        "#101820", "#17212B", "#F5F7FA", "#FFF8E7"
     )
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (allowDefault) {
+                    OutlinedButton(onClick = { onSelect("") }, modifier = Modifier.fillMaxWidth()) {
+                        Text("استخدام لون الثيم الافتراضي")
+                    }
+                }
                 palette.chunked(4).forEach { row ->
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         row.forEach { hex ->
