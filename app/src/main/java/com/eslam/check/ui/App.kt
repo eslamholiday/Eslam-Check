@@ -2632,6 +2632,45 @@ private fun CalculatorBubble(opened: Boolean, onToggle: () -> Unit, modifier: Mo
     }
 }
 
+private fun copyToClipboard(context: Context, label: String, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+    Toast.makeText(context, "تم النسخ", Toast.LENGTH_SHORT).show()
+}
+
+private fun openIssuerContact(context: Context, vm: MainViewModel, tx: Transaction) {
+    val type = vm.setting("issuer_contact_type", "GROUP")
+    if (type == "GROUP") {
+        val url = vm.setting(
+            "issuer_group_url",
+            "https://chat.whatsapp.com/CSubCIjAE5Y0qnzWOI5Z6K?s=cl&p=a&mlu=4&ilr=4"
+        ).trim()
+        if (url.startsWith("http")) context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    } else {
+        val phone = vm.setting("issuer_whatsapp", "").filter(Char::isDigit)
+        if (phone.isNotBlank()) {
+            val message = Uri.encode("PNR " + tx.pnr.orEmpty() + " • عملية " + tx.operationNo.orEmpty())
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone + "?text=" + message)))
+        }
+    }
+}
+
+@Composable
+private fun operationTypeColor(vm: MainViewModel, type: TxType): Color {
+    val revision by vm.settingsRevision.collectAsState()
+    val key = when (type) {
+        TxType.TICKET -> "color_ticket"
+        TxType.VISA -> "color_visa"
+        TxType.CHANGE -> "color_change"
+        TxType.REFUND -> "color_refund"
+        TxType.PAYMENT -> "color_payment"
+        TxType.VOID -> "color_void"
+        else -> "color_unknown"
+    }
+    val hex = remember(revision, key) { vm.setting(key, defaultTypeColor(key)) }
+    return colorFromHex(hex) ?: MaterialTheme.colorScheme.primary
+}
+
 private fun labelFor(type: TxType): String = when (type) {
     TxType.TICKET -> "تذكرة"
     TxType.VISA -> "فيزا"
