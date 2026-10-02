@@ -748,10 +748,10 @@ private fun MoreScreen(vm: MainViewModel) {
         "people" -> InfoSettingsPage(
             title = "المسافرون والعملاء",
             items = listOf(
-                "Autocomplete للأسماء والمسافرين",
-                "ID داخلي ثابت لكل مسافر",
-                "العميل المسؤول اختياري",
-                "اقتراح الربط بدون دمج تلقائي"
+                "جميع المسافرين / المسؤولون / التابعون / المستقلون",
+                "المسؤول يبقى مسافرًا بنفس ID ولا ينشأ سجل مكرر",
+                "يمكن ربط عدة مسافرين بمسؤول واحد وتغيير المسؤول أو فك الربط",
+                "رقم واتساب المسؤول يستخدم كزر الزبون عند توفره"
             ),
             onBack = { page = "root" }
         )
@@ -788,11 +788,12 @@ private fun MoreScreen(vm: MainViewModel) {
         "advanced" -> InfoSettingsPage(
             title = "متقدم",
             items = listOf(
-                "ECX v1 هو بروتوكول Eslam Bridge الحالي",
-                "Balance و Sequence معلومات كشف وليسا هوية للعملية",
-                "New Change يترجم إلى Change مع الاحتفاظ بكود المصدر",
-                "New Refund يترجم إلى Refund مع الاحتفاظ بكود المصدر",
-                "عملية الصفر غير الواضحة تذهب إلى مبهم"
+                "ECX v2 هو بروتوكول Eslam Bridge الحالي مع دعم ECX v1 القديم",
+                "لكل كشف DOC_ID/SNAPSHOT_ID ولكل عملية OP_ID ثابت عبر الكشوفات التراكمية",
+                "Balance و Sequence معلومات Snapshot وليسا هوية للعملية",
+                "Change وNew Change يترجمان إلى Change فقط؛ Refund وNew Refund إلى Refund فقط",
+                "Sale Ticket صفر وفق القاعدة المتفق عليها يترجم Void، وVisa صفر تترجم ملغاة",
+                "تذاكر كشف IQD تصنف Iraqi Airways تلقائيًا؛ خط USD غير المعروف يبقى مبهمًا داخل التذكرة"
             ),
             onBack = { page = "root" }
         )
@@ -862,7 +863,7 @@ private fun BridgeSettings(vm: MainViewModel, onBack: () -> Unit) {
     ) {
         item { SettingsHeader("Eslam Bridge", onBack) }
         item {
-            SettingsInfoCard("لغة الاستيراد", "ECX v1 • نص واحد يمكن أن يحتوي USD + IQD")
+            SettingsInfoCard("لغة الاستيراد", "ECX v2 • هوية ثابتة للملف والكشف والعملية • يدعم ECX v1 القديم")
         }
         item {
             SettingSwitchRow(
@@ -885,13 +886,13 @@ private fun BridgeSettings(vm: MainViewModel, onBack: () -> Unit) {
         item {
             SettingsInfoCard(
                 "المطابقة",
-                "رقم العملية + العملة. تغيّر Balance أو ترتيب الصفوف وحده لا يعتبر تغييرًا في العملية."
+                "ECX v2 يستخدم OP_ID ثابتًا. عند غيابه نرجع إلى رقم العملية + العملة. تغيّر Balance أو ترتيب الصفوف وحده لا يعتبر تغييرًا."
             )
         }
         item {
             SettingsInfoCard(
                 "العمليات الصفرية",
-                "إذا كان الإلغاء واضحًا في المصدر تدخل كإلغاء. إذا لم يكن واضحًا تدخل إلى الحالات المبهمة."
+                "حسب قواعدك: تذكرة Sale Tickets بقيمة صفر = Void، Visa بقيمة صفر = ملغاة، وSale Tickets بملاحظة «تغيير» = Change."
             )
         }
     }
@@ -1666,6 +1667,7 @@ private fun labelFor(type: TxType): String = when (type) {
 private fun statusFor(tx: Transaction): String = when {
     tx.changedAfterReview -> "تغيّرت"
     tx.type == TxType.UNKNOWN -> "مبهم"
+    tx.type == TxType.TICKET && tx.currency == Currency.USD && tx.airline.isNullOrBlank() -> "خط مبهم"
     tx.reviewState == ReviewState.REVIEWED -> "مراجع"
     tx.reviewState == ReviewState.FOLLOW_UP -> "متابعة"
     else -> "جديد"
@@ -1673,7 +1675,9 @@ private fun statusFor(tx: Transaction): String = when {
 
 private fun ruleLabel(rule: CommissionRule): String = when (rule.kind) {
     RuleKind.PERCENT_BASE -> "${rule.value}% من Base Fare"
-    RuleKind.FIXED_PER_PASSENGER -> "+${rule.value} لكل مسافر"
+    RuleKind.FIXED_PER_PASSENGER -> if (rule.roundTripValue != null)
+        "+${rule.value} اتجاه واحد / +${rule.roundTripValue} ذهاب وإياب لكل مسافر"
+    else "+${rule.value} لكل مسافر"
     RuleKind.PRIVATE_MANUAL -> "عمولة خاصة"
     RuleKind.NONE -> "بدون عمولة"
 }
