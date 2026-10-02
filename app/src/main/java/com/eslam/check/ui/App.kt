@@ -953,22 +953,146 @@ private fun ReviewSettings(vm: MainViewModel, onBack: () -> Unit) {
 @Composable
 private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
     val rules by vm.rules.collectAsState()
+    var editing by remember { mutableStateOf<CommissionRule?>(null) }
+    var adding by remember { mutableStateOf(false) }
+
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item { SettingsHeader("التذاكر والعمولات", onBack) }
-        item { SettingsInfoCard("قاعدة الحساب", "النسبة المئوية تطبق على Base Fare، والرسوم الثابتة تطبق لكل مسافر.") }
+        item {
+            SettingsInfoCard(
+                "قاعدة الحساب",
+                "النسبة المئوية دائمًا على Base Fare لكل مسافر ثم تجمع. الرسم الثابت لكل مسافر. القواعد التاريخية لا تعيد حساب العمليات المراجعة."
+            )
+        }
+        item {
+            Button(onClick = { adding = true }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.Add, null)
+                Spacer(Modifier.width(6.dp))
+                Text("إضافة شركة / قاعدة")
+            }
+        }
         items(rules, key = { it.id }) { rule ->
-            Surface(shape = RoundedCornerShape(14.dp), tonalElevation = 1.dp) {
-                Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(rule.airline, fontWeight = FontWeight.Bold)
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable { editing = rule },
+                shape = RoundedCornerShape(14.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(rule.airline, fontWeight = FontWeight.Bold)
+                        Icon(Icons.Rounded.Edit, null, tint = MaterialTheme.colorScheme.primary)
+                    }
                     Text(ruleLabel(rule), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    rule.note?.takeIf { it.isNotBlank() }?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
             }
         }
     }
+
+    editing?.let { rule ->
+        CommissionRuleDialog(vm, rule, onDismiss = { editing = null })
+    }
+    if (adding) {
+        CommissionRuleDialog(
+            vm,
+            CommissionRule(
+                id = "new",
+                airline = "",
+                kind = RuleKind.PRIVATE_MANUAL,
+                value = 0.0
+            ),
+            onDismiss = { adding = false }
+        )
+    }
+}
+
+@Composable
+private fun CommissionRuleDialog(vm: MainViewModel, initial: CommissionRule, onDismiss: () -> Unit) {
+    var airline by remember(initial.id) { mutableStateOf(initial.airline) }
+    var kind by remember(initial.id) { mutableStateOf(initial.kind) }
+    var value by remember(initial.id) { mutableStateOf(if (initial.value == 0.0) "" else initial.value.toString()) }
+    var roundTrip by remember(initial.id) { mutableStateOf(initial.roundTripValue?.toString().orEmpty()) }
+    var effectiveFrom by remember(initial.id) { mutableStateOf(initial.effectiveFrom.orEmpty()) }
+    var note by remember(initial.id) { mutableStateOf(initial.note.orEmpty()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (initial.id == "new") "إضافة قاعدة عمولة" else "تعديل قاعدة العمولة") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 560.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    OutlinedTextField(
+                        airline, { airline = it }, Modifier.fillMaxWidth(),
+                        label = { Text("شركة الطيران") }, singleLine = true
+                    )
+                }
+                item {
+                    Text("نوع القاعدة", fontWeight = FontWeight.Bold)
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(
+                            RuleKind.PERCENT_BASE to "% Base Fare",
+                            RuleKind.FIXED_PER_PASSENGER to "رسم لكل مسافر",
+                            RuleKind.NONE to "بدون عمولة",
+                            RuleKind.PRIVATE_MANUAL to "خاص/يدوي"
+                        ).forEach { (k, label) ->
+                            FilterChip(selected = kind == k, onClick = { kind = k }, label = { Text(label) })
+                        }
+                    }
+                }
+                if (kind == RuleKind.PERCENT_BASE || kind == RuleKind.FIXED_PER_PASSENGER) {
+                    item {
+                        OutlinedTextField(
+                            value, { value = it }, Modifier.fillMaxWidth(),
+                            label = { Text(if (kind == RuleKind.PERCENT_BASE) "النسبة %" else "قيمة الرسم لكل مسافر") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true
+                        )
+                    }
+                }
+                if (kind == RuleKind.FIXED_PER_PASSENGER) {
+                    item {
+                        OutlinedTextField(
+                            roundTrip, { roundTrip = it }, Modifier.fillMaxWidth(),
+                            label = { Text("قيمة ذهاب وإياب - اختياري") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true
+                        )
+                    }
+                }
+                item {
+                    OutlinedTextField(
+                        effectiveFrom, { effectiveFrom = it }, Modifier.fillMaxWidth(),
+                        label = { Text("سارية من YYYY-MM-DD - اختياري") },
+                        singleLine = true
+                    )
+                }
+                item {
+                    OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), label = { Text("ملاحظة القاعدة") }, minLines = 2)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = airline.isNotBlank(),
+                onClick = {
+                    vm.saveRule(
+                        airline = airline,
+                        kind = kind,
+                        value = value.toDoubleOrNull() ?: 0.0,
+                        roundTripValue = roundTrip.toDoubleOrNull(),
+                        note = note.ifBlank { null },
+                        effectiveFrom = effectiveFrom.ifBlank { null }
+                    )
+                    onDismiss()
+                }
+            ) { Text("حفظ") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+    )
 }
 
 @Composable
