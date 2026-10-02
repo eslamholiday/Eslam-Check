@@ -1279,25 +1279,30 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun transactionsForPassenger(passengerId: String): List<Transaction> {
-        val out = mutableListOf<Transaction>()
-        readableDatabase.rawQuery("""
-            SELECT t.* FROM transactions t
-            JOIN tx_passengers tp ON tp.tx_id=t.id
-            WHERE tp.passenger_id=?
-            ORDER BY COALESCE(t.transaction_date,'') DESC, t.imported_at DESC
-        """.trimIndent(), arrayOf(passengerId)).use { c -> while (c.moveToNext()) out += c.toTransaction() }
-        return out
-    }
-
-    fun transactionsForResponsible(responsibleId: String): List<Transaction> {
+        val ids = mergedGroupIds(passengerId)
+        if (ids.isEmpty()) return emptyList()
+        val placeholders = ids.joinToString(",") { "?" }
         val out = mutableListOf<Transaction>()
         readableDatabase.rawQuery("""
             SELECT DISTINCT t.* FROM transactions t
             JOIN tx_passengers tp ON tp.tx_id=t.id
-            JOIN passengers p ON p.id=tp.passenger_id
-            WHERE p.responsible_id=?
+            WHERE tp.passenger_id IN ($placeholders)
             ORDER BY COALESCE(t.transaction_date,'') DESC, t.imported_at DESC
-        """.trimIndent(), arrayOf(responsibleId)).use { c -> while (c.moveToNext()) out += c.toTransaction() }
+        """.trimIndent(), ids.toTypedArray()).use { c -> while (c.moveToNext()) out += c.toTransaction() }
+        return out
+    }
+
+    fun transactionsForResponsible(responsibleId: String): List<Transaction> {
+        val dependentIds = dependentsOf(responsibleId).flatMap { mergedGroupIds(it.id) }.distinct()
+        if (dependentIds.isEmpty()) return emptyList()
+        val placeholders = dependentIds.joinToString(",") { "?" }
+        val out = mutableListOf<Transaction>()
+        readableDatabase.rawQuery("""
+            SELECT DISTINCT t.* FROM transactions t
+            JOIN tx_passengers tp ON tp.tx_id=t.id
+            WHERE tp.passenger_id IN ($placeholders)
+            ORDER BY COALESCE(t.transaction_date,'') DESC, t.imported_at DESC
+        """.trimIndent(), dependentIds.toTypedArray()).use { c -> while (c.moveToNext()) out += c.toTransaction() }
         return out
     }
 
@@ -1313,10 +1318,13 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun passengerFiles(passengerId: String): List<PassengerFile> {
+        val ids = mergedGroupIds(passengerId)
+        if (ids.isEmpty()) return emptyList()
+        val placeholders = ids.joinToString(",") { "?" }
         val out = mutableListOf<PassengerFile>()
         readableDatabase.rawQuery(
-            "SELECT * FROM passenger_files WHERE passenger_id=? ORDER BY is_primary DESC, created_at DESC",
-            arrayOf(passengerId)
+            "SELECT * FROM passenger_files WHERE passenger_id IN ($placeholders) ORDER BY is_primary DESC, created_at DESC",
+            ids.toTypedArray()
         ).use { c ->
             while (c.moveToNext()) out += PassengerFile(
                 id = c.s("id"), passengerId = c.s("passenger_id"), uri = c.s("uri"),
@@ -1328,13 +1336,14 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun addPassengerFile(passengerId: String, uri: String, mimeType: String?, displayName: String?): PassengerFile {
-        val first = passengerFiles(passengerId).isEmpty()
-        val item = PassengerFile(UUID.randomUUID().toString(), passengerId, uri, mimeType, displayName, first)
+        val ownerId = resolveCanonicalPassengerId(passengerId)
+        val first = passengerFiles(ownerId).isEmpty()
+        val item = PassengerFile(UUID.randomUUID().toString(), ownerId, uri, mimeType, displayName, first)
         writableDatabase.insert("passenger_files", null, ContentValues().apply {
-            put("id", item.id); put("passenger_id", passengerId); put("uri", uri); put("mime_type", mimeType)
+            put("id", item.id); put("passenger_id", ownerId); put("uri", uri); put("mime_type", mimeType)
             put("display_name", displayName); put("is_primary", if (item.isPrimary) 1 else 0); put("created_at", item.createdAt)
         })
-        audit("passenger", passengerId, "add_passport_file", displayName ?: uri)
+        audit("passenger", ownerId, "add_passport_file", displayName ?: uri)
         return item
     }
 
@@ -1346,13 +1355,16 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun setPrimaryPassengerFile(passengerId: String, id: String) {
+        val ownerId = resolveCanonicalPassengerId(passengerId)
+        val ids = mergedGroupIds(ownerId)
+        val placeholders = ids.joinToString(",") { "?" }
         writableDatabase.beginTransaction()
         try {
-            writableDatabase.update("passenger_files", ContentValues().apply { put("is_primary", 0) }, "passenger_id=?", arrayOf(passengerId))
+            writableDatabase.update("passenger_files", ContentValues().apply { put("is_primary", 0) }, "passenger_id IN ($placeholders)", ids.toTypedArray())
             writableDatabase.update("passenger_files", ContentValues().apply { put("is_primary", 1) }, "id=?", arrayOf(id))
             writableDatabase.setTransactionSuccessful()
         } finally { writableDatabase.endTransaction() }
-        audit("passenger", passengerId, "primary_passport_file", id)
+        audit("passenger", ownerId, "primary_passport_file", id)
     }
 
     fun auditEvents(entityType: String, entityId: String, limit: Int = 100): List<AuditEvent> {
