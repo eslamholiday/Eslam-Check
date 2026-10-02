@@ -1,7 +1,14 @@
 package com.eslam.check.ui
 
+import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.ContactsContract
+import android.provider.OpenableColumns
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -24,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.IntOffset
@@ -46,7 +54,24 @@ private enum class MainTab(val title: String) {
 
 @Composable
 fun EslamCheckApp(vm: MainViewModel) {
-    EslamCheckTheme {
+    val settingsRevision by vm.settingsRevision.collectAsState()
+    val preset = remember(settingsRevision) { vm.setting("theme_preset", "NAVY") }
+    val primary = remember(settingsRevision) { vm.setting("theme_primary", "") }
+    val background = remember(settingsRevision) { vm.setting("theme_background", "") }
+    val surface = remember(settingsRevision) { vm.setting("theme_surface", "") }
+    val textColor = remember(settingsRevision) { vm.setting("theme_text", "") }
+    val fontChoice = remember(settingsRevision) { vm.setting("font_choice", "SANS") }
+    val fontScale = remember(settingsRevision) { vm.setting("font_scale", "1.0").toFloatOrNull() ?: 1f }
+
+    EslamCheckTheme(
+        preset = preset,
+        customPrimary = primary,
+        customBackground = background,
+        customSurface = surface,
+        customText = textColor,
+        fontChoice = fontChoice,
+        fontScale = fontScale
+    ) {
         val message by vm.message.collectAsState()
         val busy by vm.busy.collectAsState()
         val snackbar = remember { SnackbarHostState() }
@@ -92,7 +117,7 @@ fun EslamCheckApp(vm: MainViewModel) {
                 when (tab) {
                     MainTab.HOME -> DashboardScreen(vm, { tab = MainTab.REVIEW }) { detailId = it }
                     MainTab.REVIEW -> ReviewScreen(vm) { detailId = it }
-                    MainTab.PASSENGERS -> PassengersScreen(vm)
+                    MainTab.PASSENGERS -> PassengersScreen(vm) { detailId = it }
                     MainTab.PAYMENTS -> PaymentsScreen(vm) { detailId = it }
                     MainTab.MORE -> MoreScreen(vm)
                 }
@@ -127,8 +152,10 @@ fun EslamCheckApp(vm: MainViewModel) {
             ManualTransactionDialog(vm) { manualOpen = false }
         }
         detailId?.let { id ->
-            TransactionDetailDialog(vm, id, onDismiss = { detailId = null }) { next ->
-                detailId = next
+            key(id) {
+                TransactionDetailDialog(vm, id, onDismiss = { detailId = null }) { next ->
+                    detailId = next
+                }
             }
         }
     }
