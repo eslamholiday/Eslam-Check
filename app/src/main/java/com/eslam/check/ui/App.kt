@@ -3233,6 +3233,160 @@ private fun TransactionDetailDialog(
             )
         }
     }
+
+    deletePassengerTarget?.let { passenger ->
+        AlertDialog(
+            onDismissRequest = { deletePassengerTarget = null },
+            title = { Text("حذف ارتباط المسافر") },
+            text = {
+                Text(
+                    "سيُخفى «" + passenger.name + "» من هذه العملية فقط. إذا أعدت استيراد نفس رقم العملية ونفس العملة فلن يعود تلقائيًا، أما إذا ظهر في عملية جديدة برقم مختلف فسيظهر بشكل طبيعي."
+                )
+            },
+            confirmButton = {
+                Button(
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    onClick = {
+                        vm.deletePassengerLink(edit.id, passenger.id)
+                        deletePassengerTarget = null
+                    }
+                ) {
+                    Icon(Icons.Rounded.PersonRemove, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("حذف الارتباط")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletePassengerTarget = null }) { Text("إلغاء") }
+            }
+        )
+    }
+
+    receiptPreview?.let { attachment ->
+        ReceiptPreviewDialog(
+            attachment = attachment,
+            onDismiss = { receiptPreview = null }
+        )
+    }
+}
+
+private data class ReceiptPreviewState(
+    val bitmap: Bitmap? = null,
+    val error: String? = null
+)
+
+@Composable
+private fun ReceiptPreviewDialog(
+    attachment: TransactionAttachment,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val state by produceState(
+        initialValue = ReceiptPreviewState(),
+        attachment.id,
+        attachment.uri,
+        attachment.mimeType
+    ) {
+        value = withContext(Dispatchers.IO) {
+            try {
+                ReceiptPreviewState(bitmap = renderReceiptBitmap(context, attachment))
+            } catch (e: Exception) {
+                ReceiptPreviewState(error = e.message ?: "تعذر فتح المرفق")
+            }
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            Modifier.fillMaxWidth(0.97f).fillMaxHeight(0.92f),
+            shape = RoundedCornerShape(22.dp)
+        ) {
+            Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(attachment.displayName ?: "مرفق التسديد", fontWeight = FontWeight.Bold, maxLines = 2)
+                        Text(
+                            if (attachment.mimeType.orEmpty().contains("pdf", true)) "معاينة الصفحة الأولى من PDF" else "معاينة الصورة",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, "إغلاق") }
+                }
+
+                Box(
+                    Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    when {
+                        state.bitmap != null -> Image(
+                            bitmap = state.bitmap!!.asImageBitmap(),
+                            contentDescription = attachment.displayName,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit
+                        )
+                        state.error != null -> Text(state.error!!, color = MaterialTheme.colorScheme.error)
+                        else -> CircularProgressIndicator()
+                    }
+                }
+
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        try {
+                            val uri = Uri.parse(attachment.uri)
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(uri, attachment.mimeType ?: "*/*")
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                            )
+                        } catch (_: Exception) {
+                            Toast.makeText(context, "تعذر فتح الملف بعارض خارجي", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                ) {
+                    Icon(Icons.Rounded.OpenInNew, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("فتح الملف")
+                }
+            }
+        }
+    }
+}
+
+private fun renderReceiptBitmap(context: Context, attachment: TransactionAttachment): Bitmap? {
+    val uri = Uri.parse(attachment.uri)
+    return if (attachment.mimeType.orEmpty().contains("pdf", true) ||
+        attachment.displayName.orEmpty().endsWith(".pdf", true)
+    ) {
+        context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+            PdfRenderer(descriptor).use { renderer ->
+                if (renderer.pageCount <= 0) return@use null
+                renderer.openPage(0).use { page ->
+                    val maxSide = 1800f
+                    val scale = minOf(
+                        2f,
+                        maxSide / maxOf(page.width.toFloat(), page.height.toFloat())
+                    ).coerceAtLeast(1f)
+                    val bitmap = Bitmap.createBitmap(
+                        (page.width * scale).roundToInt().coerceAtLeast(1),
+                        (page.height * scale).roundToInt().coerceAtLeast(1),
+                        Bitmap.Config.ARGB_8888
+                    )
+                    bitmap.eraseColor(android.graphics.Color.WHITE)
+                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    bitmap
+                }
+            }
+        }
+    } else {
+        context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream)
+    }
 }
 
 @Composable
