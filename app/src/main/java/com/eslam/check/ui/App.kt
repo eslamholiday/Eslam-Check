@@ -2814,22 +2814,79 @@ private fun TransactionDetailDialog(
                         item {
                             Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
                                 Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("رابط التسديد / المرفق", fontWeight = FontWeight.Bold)
-                                    OutlinedTextField(
-                                        edit.externalLink.orEmpty(),
-                                        { edit = edit.copy(externalLink = it.ifBlank { null }) },
+                                    Row(
                                         Modifier.fillMaxWidth(),
-                                        label = { Text("ألصق رابط الإيصال أو المستند") },
-                                        minLines = 2
-                                    )
-                                    if (edit.externalLink.orEmpty().startsWith("http")) {
-                                        OutlinedButton(
-                                            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(edit.externalLink))) },
-                                            modifier = Modifier.fillMaxWidth()
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text("مرفقات التسديد", fontWeight = FontWeight.Bold)
+                                            Text(
+                                                "صور أو PDF محفوظة مع العملية ويمكن معاينتها أو تغييرها أو حذفها.",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        FilledTonalButton(
+                                            onClick = {
+                                                replaceAttachmentId = null
+                                                receiptLauncher.launch(arrayOf("image/*", "application/pdf"))
+                                            }
                                         ) {
-                                            Icon(Icons.Rounded.OpenInNew, null)
-                                            Spacer(Modifier.width(5.dp))
-                                            Text("فتح الرابط")
+                                            Icon(Icons.Rounded.AttachFile, null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("إضافة")
+                                        }
+                                    }
+
+                                    if (attachments.isEmpty()) {
+                                        Text("لا يوجد إيصال مرفق.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                                    } else {
+                                        attachments.forEach { attachment ->
+                                            Surface(
+                                                modifier = Modifier.fillMaxWidth().clickable { receiptPreview = attachment },
+                                                shape = RoundedCornerShape(12.dp),
+                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                            ) {
+                                                Row(
+                                                    Modifier.fillMaxWidth().padding(9.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Icon(
+                                                        if (attachment.mimeType.orEmpty().contains("pdf", true)) Icons.Rounded.PictureAsPdf else Icons.Rounded.Image,
+                                                        null,
+                                                        tint = MaterialTheme.colorScheme.primary
+                                                    )
+                                                    Column(Modifier.weight(1f)) {
+                                                        Text(attachment.displayName ?: "مرفق التسديد", fontWeight = FontWeight.SemiBold, maxLines = 2)
+                                                        Text(
+                                                            if (attachment.mimeType.orEmpty().contains("pdf", true)) "PDF • اضغط للمعاينة" else "صورة • اضغط للمعاينة",
+                                                            fontSize = 11.sp,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                    IconButton(
+                                                        onClick = {
+                                                            replaceAttachmentId = attachment.id
+                                                            receiptLauncher.launch(arrayOf("image/*", "application/pdf"))
+                                                        },
+                                                        modifier = Modifier.size(34.dp)
+                                                    ) {
+                                                        Icon(Icons.Rounded.Edit, "تغيير", modifier = Modifier.size(18.dp))
+                                                    }
+                                                    IconButton(
+                                                        onClick = {
+                                                            vm.deleteTransactionAttachmentImmediate(attachment.id)
+                                                            if (receiptPreview?.id == attachment.id) receiptPreview = null
+                                                            attachments = vm.transactionAttachments(id)
+                                                        },
+                                                        modifier = Modifier.size(34.dp)
+                                                    ) {
+                                                        Icon(Icons.Rounded.DeleteOutline, "حذف", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
