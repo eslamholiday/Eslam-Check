@@ -719,17 +719,40 @@ private fun PassengerStarRating(
     modifier: Modifier = Modifier,
     compact: Boolean = false
 ) {
+    if (compact) {
+        Surface(
+            modifier = modifier.clickable { onRatingChanged(if (rating >= 5) 0 else rating + 1) },
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
+        ) {
+            Row(
+                Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Icon(
+                    if (rating > 0) Icons.Rounded.Star else Icons.Rounded.StarOutline,
+                    contentDescription = "تقييم المسافر",
+                    tint = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(if (rating > 0) rating.toString() else "—", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        return
+    }
+
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         (1..5).forEach { star ->
             IconButton(
                 onClick = { onRatingChanged(if (rating == star) 0 else star) },
-                modifier = Modifier.size(if (compact) 24.dp else 30.dp)
+                modifier = Modifier.size(30.dp)
             ) {
                 Icon(
                     if (star <= rating) Icons.Rounded.Star else Icons.Rounded.StarOutline,
                     contentDescription = star.toString() + " نجوم",
                     tint = if (star <= rating) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(if (compact) 17.dp else 21.dp)
+                    modifier = Modifier.size(21.dp)
                 )
             }
         }
@@ -739,16 +762,21 @@ private fun PassengerStarRating(
 @Composable
 private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
     val passengers by vm.passengers.collectAsState()
+    val transactions by vm.transactions.collectAsState()
+    val activityMap = remember(passengers, transactions) { vm.passengerActivityStats() }
     var search by remember { mutableStateOf("") }
     var category by remember { mutableStateOf(PassengerCategory.ALL) }
     var ratingFilter by remember { mutableStateOf<Int?>(null) }
+    var favoritesOnly by remember { mutableStateOf(false) }
+    var unclassifiedOnly by remember { mutableStateOf(false) }
     var sortMode by remember { mutableStateOf("NAME") }
+    var filtersOpen by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Passenger?>(null) }
     var mergeMode by remember { mutableStateOf(false) }
     var mergeSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showMergeDialog by remember { mutableStateOf(false) }
 
-    val filtered = remember(passengers, search, category, ratingFilter, sortMode) {
+    val filtered = remember(passengers, search, category, ratingFilter, favoritesOnly, unclassifiedOnly, sortMode, activityMap) {
         val base = if (search.isBlank()) passengers else vm.passengerSuggestions(search)
         base.filter { p ->
             val categoryOk = when (category) {
@@ -757,11 +785,22 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                 PassengerCategory.DEPENDENT -> p.responsibleId != null
                 PassengerCategory.INDEPENDENT -> !p.isResponsible && p.responsibleId == null
             }
-            categoryOk && (ratingFilter == null || p.rating == ratingFilter)
+            val activity = activityMap[p.id] ?: PassengerActivityStats(p.id)
+            val unclassified = p.phone.isNullOrBlank() &&
+                p.passport.isNullOrBlank() &&
+                !p.isResponsible &&
+                p.responsibleId == null &&
+                activity.total <= 1
+            categoryOk &&
+                (ratingFilter == null || p.rating == ratingFilter) &&
+                (!favoritesOnly || p.rating >= 4) &&
+                (!unclassifiedOnly || unclassified)
         }.let { list ->
             when (sortMode) {
                 "HIGH" -> list.sortedWith(compareByDescending<Passenger> { it.rating }.thenBy { it.name.lowercase() })
                 "LOW" -> list.sortedWith(compareBy<Passenger> { it.rating }.thenBy { it.name.lowercase() })
+                "RECENT" -> list.sortedWith(compareByDescending<Passenger> { activityMap[it.id]?.lastActivityAt ?: 0L }.thenBy { it.name.lowercase() })
+                "OPS" -> list.sortedWith(compareByDescending<Passenger> { activityMap[it.id]?.total ?: 0 }.thenBy { it.name.lowercase() })
                 else -> list.sortedBy { it.name.lowercase() }
             }
         }
@@ -798,49 +837,23 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
         )
 
         Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            listOf(
-                PassengerCategory.ALL to "الجميع",
-                PassengerCategory.RESPONSIBLE to "المسؤولون",
-                PassengerCategory.DEPENDENT to "التابعون",
-                PassengerCategory.INDEPENDENT to "المستقلون"
-            ).forEach { (key, label) ->
-                FilterChip(selected = category == key, onClick = { category = key }, label = { Text(label) })
+            FilledTonalButton(
+                onClick = { filtersOpen = true },
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Rounded.FilterList, null)
+                Spacer(Modifier.width(5.dp))
+                Text("فرز وتصفية")
             }
-        }
-
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            FilterChip(
-                selected = ratingFilter == null,
-                onClick = { ratingFilter = null },
-                label = { Text("كل النجوم") }
+            AssistChip(
+                onClick = { filtersOpen = true },
+                label = { Text(filtered.size.toString() + " مسافر") },
+                leadingIcon = { Icon(Icons.Rounded.Groups, null, modifier = Modifier.size(16.dp)) }
             )
-            (5 downTo 1).forEach { stars ->
-                FilterChip(
-                    selected = ratingFilter == stars,
-                    onClick = { ratingFilter = if (ratingFilter == stars) null else stars },
-                    label = { Text(stars.toString() + " ★") }
-                )
-            }
-            FilterChip(
-                selected = ratingFilter == 0,
-                onClick = { ratingFilter = if (ratingFilter == 0) null else 0 },
-                label = { Text("بدون تقييم") }
-            )
-        }
-
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            FilterChip(selected = sortMode == "NAME", onClick = { sortMode = "NAME" }, label = { Text("الاسم") })
-            FilterChip(selected = sortMode == "HIGH", onClick = { sortMode = "HIGH" }, label = { Text("الأعلى ⭐") })
-            FilterChip(selected = sortMode == "LOW", onClick = { sortMode = "LOW" }, label = { Text("الأقل ⭐") })
         }
 
         if (mergeMode) {
@@ -904,6 +917,14 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.primary
                             )
+                            val activity = activityMap[p.id] ?: PassengerActivityStats(p.id)
+                            Text(
+                                activity.total.toString() + " عملية • " +
+                                    activity.tickets + " تذكرة • " +
+                                    activity.visas + " فيزا",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                             p.phone?.takeIf { it.isNotBlank() }?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                             p.responsibleId?.let { rid ->
                                 vm.passengerById(rid)?.let { Text("المسؤول: " + it.name, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary) }
@@ -924,6 +945,97 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                 Icon(Icons.Rounded.CallMerge, null)
                 Spacer(Modifier.width(6.dp))
                 Text("دمج المحددين (" + mergeSelection.size + ")")
+            }
+        }
+    }
+
+    if (filtersOpen) {
+        ModalBottomSheet(onDismissRequest = { filtersOpen = false }) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("فرز وتصفية المسافرين", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+
+                Text("الفئة", fontWeight = FontWeight.SemiBold)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(
+                        PassengerCategory.ALL to "الجميع",
+                        PassengerCategory.RESPONSIBLE to "المسؤولون",
+                        PassengerCategory.DEPENDENT to "التابعون",
+                        PassengerCategory.INDEPENDENT to "المستقلون"
+                    ).forEach { (key, label) ->
+                        FilterChip(selected = category == key, onClick = { category = key }, label = { Text(label) })
+                    }
+                }
+
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("المفضّلون 4–5 نجوم", Modifier.weight(1f))
+                    Switch(checked = favoritesOnly, onCheckedChange = { favoritesOnly = it })
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("غير المصنفين فقط", Modifier.weight(1f))
+                    Switch(checked = unclassifiedOnly, onCheckedChange = { unclassifiedOnly = it })
+                }
+
+                Text("النجوم", fontWeight = FontWeight.SemiBold)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    FilterChip(
+                        selected = ratingFilter == null,
+                        onClick = { ratingFilter = null },
+                        label = { Text("الكل") }
+                    )
+                    (5 downTo 1).forEach { stars ->
+                        FilterChip(
+                            selected = ratingFilter == stars,
+                            onClick = { ratingFilter = if (ratingFilter == stars) null else stars },
+                            label = { Text(stars.toString() + " ★") }
+                        )
+                    }
+                    FilterChip(
+                        selected = ratingFilter == 0,
+                        onClick = { ratingFilter = if (ratingFilter == 0) null else 0 },
+                        label = { Text("بدون") }
+                    )
+                }
+
+                Text("الترتيب", fontWeight = FontWeight.SemiBold)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(
+                        "NAME" to "الاسم",
+                        "HIGH" to "الأعلى ⭐",
+                        "LOW" to "الأقل ⭐",
+                        "RECENT" to "آخر نشاط",
+                        "OPS" to "الأكثر عمليات"
+                    ).forEach { (key, label) ->
+                        FilterChip(selected = sortMode == key, onClick = { sortMode = key }, label = { Text(label) })
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        category = PassengerCategory.ALL
+                        ratingFilter = null
+                        favoritesOnly = false
+                        unclassifiedOnly = false
+                        sortMode = "NAME"
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Rounded.RestartAlt, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("إعادة التصفية")
+                }
+                Spacer(Modifier.height(18.dp))
             }
         }
     }
