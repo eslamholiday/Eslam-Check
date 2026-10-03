@@ -3248,17 +3248,25 @@ private fun TransactionDetailDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         modifier = Modifier.weight(1f),
+                        enabled = !reviewSaving,
                         onClick = {
-                            vm.updateTransaction(edit)
-                            if (edit.airline != tx.airline) vm.setAirline(edit.id, edit.airline)
-                            if (edit.reviewState != ReviewState.REVIEWED) {
-                                vm.setReview(edit.id, ReviewState.REVIEWED)
+                            reviewSaving = true
+                            val reviewedEdit = edit.copy(reviewState = ReviewState.REVIEWED)
+                            vm.saveAndReview(reviewedEdit) { success ->
+                                reviewSaving = false
+                                if (success) {
+                                    edit = reviewedEdit
+                                    val target = if (navigationIds.isNotEmpty()) smartNextId else reviewNextId
+                                    if (target != null) onNext(target) else onDismiss()
+                                }
                             }
-                            val target = if (navigationIds.isNotEmpty()) smartNextId else reviewNextId
-                            if (target != null) onNext(target) else onDismiss()
                         }
                     ) {
-                        Icon(Icons.Rounded.CheckCircle, null)
+                        if (reviewSaving) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Rounded.CheckCircle, null)
+                        }
                         Spacer(Modifier.width(4.dp))
                         Text(if (edit.reviewState == ReviewState.REVIEWED) "مراجع" else "صح")
                     }
