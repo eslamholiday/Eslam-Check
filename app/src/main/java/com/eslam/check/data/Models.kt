@@ -59,7 +59,8 @@ data class Passenger(
     val responsibleId: String? = null,
     val responsibleRelation: String? = null,
     val isResponsible: Boolean = false,
-    val mergedIntoId: String? = null
+    val mergedIntoId: String? = null,
+    val rating: Int = 0
 )
 
 data class PassengerAlias(

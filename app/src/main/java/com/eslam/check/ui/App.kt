@@ -502,6 +502,17 @@ private fun TransactionCard(
         else -> typeAccent
     }
     val auditSummary = cardAuditSummary(vm, tx)
+    val cardPassengerNames = if (tx.type != TxType.PAYMENT) {
+        vm.txPassengerDetails(tx.id)
+            .map { it.sourceName ?: it.passenger.name }
+            .filter { it.isNotBlank() }
+            .distinct()
+    } else emptyList()
+    val passengerNamesLabel = when {
+        cardPassengerNames.isEmpty() -> "لا توجد أسماء مسافرين"
+        cardPassengerNames.size <= 3 -> cardPassengerNames.joinToString(" • ")
+        else -> cardPassengerNames.take(3).joinToString(" • ") + " • +" + (cardPassengerNames.size - 3)
+    }
 
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onDetail),
@@ -537,12 +548,25 @@ private fun TransactionCard(
                 )
                 when {
                     tx.type == TxType.TICKET -> Text(
-                        "الخط: " + (tx.airline ?: "مبهم — اختر من داخل PNR"),
+                        "المسافرون: " + passengerNamesLabel,
                         fontSize = 12.sp,
-                        color = if (airlineMissing) Mystery else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
                     )
                     tx.type == TxType.VISA || (tx.type == TxType.VOID && tx.visaCountry != null) ->
-                        Text("الفيزا: " + (tx.visaCountry ?: "غير محددة"), fontSize = 12.sp)
+                        Text(
+                            "المسافرون: " + passengerNamesLabel,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2
+                        )
+                    tx.type !in setOf(TxType.PAYMENT) && cardPassengerNames.isNotEmpty() ->
+                        Text(
+                            "المسافرون: " + passengerNamesLabel,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2
+                        )
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(formatMoney(tx.amount, tx.currency), fontWeight = FontWeight.SemiBold)
@@ -643,23 +667,56 @@ private fun cardAuditSummary(vm: MainViewModel, tx: Transaction): CardAuditSumma
 }
 
 @Composable
+private fun PassengerStarRating(
+    rating: Int,
+    onRatingChanged: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
+) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        (1..5).forEach { star ->
+            IconButton(
+                onClick = { onRatingChanged(if (rating == star) 0 else star) },
+                modifier = Modifier.size(if (compact) 24.dp else 30.dp)
+            ) {
+                Icon(
+                    if (star <= rating) Icons.Rounded.Star else Icons.Rounded.StarOutline,
+                    contentDescription = star.toString() + " نجوم",
+                    tint = if (star <= rating) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(if (compact) 17.dp else 21.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
     val passengers by vm.passengers.collectAsState()
     var search by remember { mutableStateOf("") }
     var category by remember { mutableStateOf(PassengerCategory.ALL) }
+    var ratingFilter by remember { mutableStateOf<Int?>(null) }
+    var sortMode by remember { mutableStateOf("NAME") }
     var selected by remember { mutableStateOf<Passenger?>(null) }
     var mergeMode by remember { mutableStateOf(false) }
     var mergeSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showMergeDialog by remember { mutableStateOf(false) }
 
-    val filtered = remember(passengers, search, category) {
+    val filtered = remember(passengers, search, category, ratingFilter, sortMode) {
         val base = if (search.isBlank()) passengers else vm.passengerSuggestions(search)
         base.filter { p ->
-            when (category) {
+            val categoryOk = when (category) {
                 PassengerCategory.ALL -> true
                 PassengerCategory.RESPONSIBLE -> p.isResponsible
                 PassengerCategory.DEPENDENT -> p.responsibleId != null
                 PassengerCategory.INDEPENDENT -> !p.isResponsible && p.responsibleId == null
+            }
+            categoryOk && (ratingFilter == null || p.rating == ratingFilter)
+        }.let { list ->
+            when (sortMode) {
+                "HIGH" -> list.sortedWith(compareByDescending<Passenger> { it.rating }.thenBy { it.name.lowercase() })
+                "LOW" -> list.sortedWith(compareBy<Passenger> { it.rating }.thenBy { it.name.lowercase() })
+                else -> list.sortedBy { it.name.lowercase() }
             }
         }
     }
@@ -706,6 +763,38 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
             ).forEach { (key, label) ->
                 FilterChip(selected = category == key, onClick = { category = key }, label = { Text(label) })
             }
+        }
+
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            FilterChip(
+                selected = ratingFilter == null,
+                onClick = { ratingFilter = null },
+                label = { Text("كل النجوم") }
+            )
+            (5 downTo 1).forEach { stars ->
+                FilterChip(
+                    selected = ratingFilter == stars,
+                    onClick = { ratingFilter = if (ratingFilter == stars) null else stars },
+                    label = { Text(stars.toString() + " ★") }
+                )
+            }
+            FilterChip(
+                selected = ratingFilter == 0,
+                onClick = { ratingFilter = if (ratingFilter == 0) null else 0 },
+                label = { Text("بدون تقييم") }
+            )
+        }
+
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            FilterChip(selected = sortMode == "NAME", onClick = { sortMode = "NAME" }, label = { Text("الاسم") })
+            FilterChip(selected = sortMode == "HIGH", onClick = { sortMode = "HIGH" }, label = { Text("الأعلى ⭐") })
+            FilterChip(selected = sortMode == "LOW", onClick = { sortMode = "LOW" }, label = { Text("الأقل ⭐") })
         }
 
         if (mergeMode) {
@@ -755,6 +844,11 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(p.name, fontWeight = FontWeight.Bold)
+                            PassengerStarRating(
+                                rating = p.rating,
+                                onRatingChanged = { vm.setPassengerRating(p.id, it) },
+                                compact = true
+                            )
                             Text(
                                 when {
                                     p.isResponsible -> "مسؤول • " + vm.dependentsOf(p.id).size + " تابع"
@@ -967,6 +1061,27 @@ private fun PassengerDetailDialog(
                 LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     item {
                         OutlinedTextField(edit.name, { edit = edit.copy(name = it) }, Modifier.fillMaxWidth(), label = { Text("الاسم") })
+                    }
+
+                    item {
+                        Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("تقييم المسافر", fontWeight = FontWeight.Bold)
+                                    Text("تقييم يدوي من 0 إلى 5 نجوم", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                PassengerStarRating(
+                                    rating = edit.rating,
+                                    onRatingChanged = { rating ->
+                                        edit = edit.copy(rating = rating)
+                                        vm.setPassengerRating(edit.id, rating)
+                                    }
+                                )
+                            }
+                        }
                     }
 
                     item {
@@ -1798,6 +1913,7 @@ private fun CommissionRuleDialog(
     var effectiveFrom by remember(initial.id) { mutableStateOf(initial.effectiveFrom.orEmpty()) }
     var direction by remember(initial.id) { mutableStateOf(initial.direction) }
     var note by remember(initial.id) { mutableStateOf(initial.note.orEmpty()) }
+    val effectiveFromValid = effectiveFrom.isBlank() || Regex("""\d{4}-\d{2}-\d{2}""").matches(effectiveFrom)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1854,8 +1970,12 @@ private fun CommissionRuleDialog(
                 }
                 item {
                     OutlinedTextField(
-                        effectiveFrom, { effectiveFrom = it }, Modifier.fillMaxWidth(),
+                        effectiveFrom,
+                        { effectiveFrom = it.filter { ch -> ch.isDigit() || ch == '-' }.take(10) },
+                        Modifier.fillMaxWidth(),
                         label = { Text("سارية من YYYY-MM-DD - اختياري") },
+                        isError = !effectiveFromValid,
+                        supportingText = if (!effectiveFromValid) ({ Text("اكتب التاريخ كاملًا مثل 2026-10-03 أو اتركه فارغًا") }) else null,
                         singleLine = true
                     )
                 }
@@ -1866,7 +1986,7 @@ private fun CommissionRuleDialog(
         },
         confirmButton = {
             Button(
-                enabled = airline.isNotBlank(),
+                enabled = airline.isNotBlank() && effectiveFromValid,
                 onClick = {
                     vm.saveRule(
                         airline = airline,
@@ -2553,6 +2673,7 @@ private fun TransactionDetailDialog(
     var rawOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
     var reviewSaving by remember(id) { mutableStateOf(false) }
+    var baseFareDrafts by remember(id) { mutableStateOf<Map<String, Double?>>(emptyMap()) }
     var attachments by remember(id) { mutableStateOf(vm.transactionAttachments(id)) }
     var receiptPreview by remember { mutableStateOf<TransactionAttachment?>(null) }
     var replaceAttachmentId by remember { mutableStateOf<String?>(null) }
@@ -2586,13 +2707,18 @@ private fun TransactionDetailDialog(
     }
 
     val rule = vm.ruleForTransaction(edit)
+    val effectiveDetails = details.map { detail ->
+        if (baseFareDrafts.containsKey(detail.passenger.id)) {
+            detail.copy(baseFare = baseFareDrafts[detail.passenger.id])
+        } else detail
+    }
     val tolerance = if (edit.currency == Currency.USD) {
         vm.setting("usd_tolerance", "1").toDoubleOrNull() ?: 1.0
     } else {
         vm.setting("iqd_tolerance", "1000").toDoubleOrNull() ?: 1000.0
     }
     val commission = CommissionEngine.calculate(
-        passengers = details,
+        passengers = effectiveDetails,
         actualSettlement = edit.amount,
         actualDiscount = edit.discount,
         referenceTotal = edit.referenceTotal,
@@ -2763,7 +2889,7 @@ private fun TransactionDetailDialog(
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
                                     Text("المسافرون داخل PNR", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                                    Text("Base Fare لكل مسافر → Taxes → العمولة المتوقعة → المقارنة مع Discount.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("أدخل Base Fare لكل مسافر ليحسب التطبيق Taxes والعمولة المتوقعة ثم يقارنها مع Discount.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 if (details.isNotEmpty()) {
                                     TextButton(onClick = { responsiblePicker = true }) {
@@ -2785,11 +2911,19 @@ private fun TransactionDetailDialog(
                                     detail = d,
                                     commissionForPassenger = rowCommission,
                                     inferredCommission = commission.inferredFromDiscount,
+                                    onBaseFareDraftChange = { passengerId, value ->
+                                        baseFareDrafts = baseFareDrafts + (passengerId to value)
+                                    },
                                     onBaseFareCommit = { passengerId, value ->
-                                        val others = details.filter { it.passenger.id != passengerId }
+                                        val others = effectiveDetails.filter { it.passenger.id != passengerId }
                                         val applyToAll = value != null && others.isNotEmpty() && others.all { it.baseFare == null }
-                                        if (applyToAll) vm.setPassengerBaseFareForAll(edit.id, value)
-                                        else vm.setPassengerBaseFare(edit.id, passengerId, value)
+                                        if (applyToAll) {
+                                            baseFareDrafts = effectiveDetails.associate { it.passenger.id to value }
+                                            vm.setPassengerBaseFareForAll(edit.id, value)
+                                        } else {
+                                            baseFareDrafts = baseFareDrafts + (passengerId to value)
+                                            vm.setPassengerBaseFare(edit.id, passengerId, value)
+                                        }
                                     },
                                     onOpenPassenger = { selectedPassenger = it },
                                     onDeleteLink = { deletePassengerTarget = it }
@@ -2817,7 +2951,15 @@ private fun TransactionDetailDialog(
                                         }
                                         else -> {
                                             Text(ruleLabel(rule))
-                                            if (!rule.effectiveFrom.isNullOrBlank()) Text("سارية من " + rule.effectiveFrom, fontSize = 12.sp)
+                                            if (!rule.effectiveFrom.isNullOrBlank()) {
+                                                val dateOk = Regex("""\d{4}-\d{2}-\d{2}""").matches(rule.effectiveFrom.orEmpty())
+                                                Text(
+                                                    if (dateOk) "سارية من " + rule.effectiveFrom
+                                                    else "تاريخ السريان غير مكتمل — صححه من قاعدة العمولة",
+                                                    fontSize = 12.sp,
+                                                    color = if (dateOk) MaterialTheme.colorScheme.onSurfaceVariant else Warn
+                                                )
+                                            }
                                             rule.note?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                                         }
                                     }
@@ -2852,8 +2994,22 @@ private fun TransactionDetailDialog(
                                     )
 
                                     if (!commission.inferredFromDiscount) {
-                                        commission.difference?.let {
-                                            Text("الفرق: " + formatMoney(kotlin.math.abs(it), edit.currency))
+                                        commission.difference?.let { diff ->
+                                            when (rule?.kind) {
+                                                RuleKind.PERCENT_BASE -> {
+                                                    val direction = when {
+                                                        kotlin.math.abs(diff) <= tolerance -> "مطابق"
+                                                        diff < 0 -> "Discount أقل من المتوقع"
+                                                        else -> "Discount أعلى من المتوقع"
+                                                    }
+                                                    Text(
+                                                        "الفرق عن المتوقع: " + formatMoney(kotlin.math.abs(diff), edit.currency) + " • " + direction,
+                                                        color = if (kotlin.math.abs(diff) <= tolerance) Good else Bad,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                }
+                                                else -> Text("الفرق: " + formatMoney(kotlin.math.abs(diff), edit.currency))
+                                            }
                                         }
                                     }
                                     commission.expectedSettlement?.let { Text("التسديد المتوقع: " + formatMoney(it, edit.currency)) }
@@ -3663,6 +3819,7 @@ private fun PassengerAuditCard(
     detail: TxPassengerDetail,
     commissionForPassenger: Double?,
     inferredCommission: Boolean,
+    onBaseFareDraftChange: (String, Double?) -> Unit,
     onBaseFareCommit: (String, Double?) -> Unit,
     onOpenPassenger: (Passenger) -> Unit,
     onDeleteLink: (Passenger) -> Unit
@@ -3735,7 +3892,13 @@ private fun PassengerAuditCard(
 
             OutlinedTextField(
                 value = baseText,
-                onValueChange = { baseText = it },
+                onValueChange = { text ->
+                    baseText = text
+                    when {
+                        text.isBlank() -> onBaseFareDraftChange(detail.passenger.id, null)
+                        else -> text.toDoubleOrNull()?.let { onBaseFareDraftChange(detail.passenger.id, it) }
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .onFocusChanged { state -> if (!state.isFocused) commitBaseFare() },

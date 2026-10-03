@@ -294,6 +294,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun setPassengerRating(passengerId: String, rating: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.setPassengerRating(passengerId, rating)
+            refresh()
+        }
+    }
+
     fun assignResponsible(passengerId: String, responsibleId: String?, relation: String? = null, forceConflicts: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
             val conflicts = db.assignResponsible(passengerId, responsibleId, relation, forceConflicts)
