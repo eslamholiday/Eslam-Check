@@ -2895,27 +2895,60 @@ private fun TransactionDetailDialog(
                     ) { Text("متابعة") }
                 }
 
+                if (edit.reviewState == ReviewState.REVIEWED) {
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            edit = edit.copy(reviewState = ReviewState.UNREVIEWED)
+                            vm.setReview(edit.id, ReviewState.UNREVIEWED)
+                        }
+                    ) {
+                        Icon(Icons.Rounded.Undo, null)
+                        Spacer(Modifier.width(5.dp))
+                        Text("إعادة إلى غير مراجع")
+                    }
+                }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         modifier = Modifier.weight(1f),
                         onClick = {
                             vm.updateTransaction(edit)
                             if (edit.airline != tx.airline) vm.setAirline(edit.id, edit.airline)
-                            vm.setReview(edit.id, ReviewState.REVIEWED)
-                            if (next != null) onNext(next.id) else onDismiss()
+                            if (edit.reviewState != ReviewState.REVIEWED) {
+                                vm.setReview(edit.id, ReviewState.REVIEWED)
+                            }
+                            val target = if (navigationIds.isNotEmpty()) smartNextId else reviewNextId
+                            if (target != null) onNext(target) else onDismiss()
                         }
                     ) {
-                        Icon(Icons.Rounded.Check, null)
+                        Icon(Icons.Rounded.CheckCircle, null)
                         Spacer(Modifier.width(4.dp))
-                        Text("صح ثم التالي")
+                        Text(if (edit.reviewState == ReviewState.REVIEWED) "مراجع" else "صح")
                     }
+
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            if (plainNextId != null) onNext(plainNextId) else onDismiss()
+                        }
+                    ) {
+                        Icon(Icons.Rounded.ArrowForward, null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("التالي")
+                    }
+
                     FilledTonalButton(
                         modifier = Modifier.weight(1f),
                         onClick = {
                             vm.updateTransaction(edit)
                             if (edit.airline != tx.airline) vm.setAirline(edit.id, edit.airline)
                         }
-                    ) { Text("حفظ") }
+                    ) {
+                        Icon(Icons.Rounded.Save, null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("حفظ")
+                    }
                 }
             }
         }
