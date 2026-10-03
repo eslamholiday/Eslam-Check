@@ -8,7 +8,25 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 9) {
+class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 9) {
+    override fun onConfigure(db: SQLiteDatabase) {
+        super.onConfigure(db)
+        val currentVersion = db.version
+        if (currentVersion in 1 until 9) {
+            try {
+                db.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
+                    if (cursor.moveToFirst()) { /* force checkpoint result */ }
+                }
+            } catch (_: Exception) { }
+            try {
+                val backupDir = java.io.File(context.filesDir, "backups").apply { mkdirs() }
+                val backup = java.io.File(backupDir, "preupgrade-v" + currentVersion + "-to-v9.db")
+                val source = context.getDatabasePath("eslam_check.db")
+                if (source.exists() && !backup.exists()) source.copyTo(backup, overwrite = false)
+            } catch (_: Exception) { }
+        }
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE transactions(
@@ -716,6 +734,178 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             "SAUDI" in p || "السعود" in value -> "SAUDI"
             else -> value.trim().uppercase()
         }
+    }
+
+    fun latestLocalBackupName(): String? =
+        java.io.File(context.filesDir, "backups")
+            .listFiles()
+            ?.filter { it.isFile && it.extension.equals("db", true) }
+            ?.maxByOrNull { it.lastModified() }
+            ?.name
+
+    fun exportDatabase(output: java.io.OutputStream): Long {
+        try {
+            writableDatabase.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
+                if (cursor.moveToFirst()) { /* checkpoint */ }
+            }
+        } catch (_: Exception) { }
+        val source = context.getDatabasePath("eslam_check.db")
+        java.io.FileInputStream(source).use { input ->
+            input.copyTo(output)
+        }
+        output.flush()
+        return source.length()
+    }
+
+    fun importDatabase(input: java.io.InputStream): Boolean {
+        val target = context.getDatabasePath("eslam_check.db")
+        val backupDir = java.io.File(context.filesDir, "backups").apply { mkdirs() }
+        val safety = java.io.File(backupDir, "before-import-" + System.currentTimeMillis() + ".db")
+        try {
+            try {
+                writableDatabase.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
+                    if (cursor.moveToFirst()) { /* checkpoint */ }
+                }
+            } catch (_: Exception) { }
+            close()
+            if (target.exists()) target.copyTo(safety, overwrite = true)
+            java.io.File(target.path + "-wal").delete()
+            java.io.File(target.path + "-shm").delete()
+            java.io.File(target.path + "-journal").delete()
+            target.parentFile?.mkdirs()
+            java.io.FileOutputStream(target, false).use { output -> input.copyTo(output) }
+            readableDatabase
+            return true
+        } catch (_: Exception) {
+            try {
+                close()
+                if (safety.exists()) safety.copyTo(target, overwrite = true)
+                java.io.File(target.path + "-wal").delete()
+                java.io.File(target.path + "-shm").delete()
+                readableDatabase
+            } catch (_: Exception) { }
+            return false
+        }
+    }
+
+    fun dataHealthStats(): DataHealthStats {
+        fun count(sql: String): Int = readableDatabase.rawQuery(sql, null).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
+        return DataHealthStats(
+            transactions = count("SELECT COUNT(*) FROM transactions"),
+            passengers = count("SELECT COUNT(*) FROM passengers WHERE merged_into_id IS NULL"),
+            responsiblePassengers = count("SELECT COUNT(*) FROM passengers WHERE merged_into_id IS NULL AND is_responsible=1"),
+            aliases = count("SELECT COUNT(*) FROM passenger_aliases"),
+            deletedLinks = count("SELECT COUNT(*) FROM deleted_tx_passengers"),
+            visaPriceRules = count("SELECT COUNT(*) FROM visa_price_rules WHERE active=1"),
+            databaseVersion = readableDatabase.version,
+            databaseBytes = context.getDatabasePath("eslam_check.db").length()
+        )
+    }
+
+    fun dataConflicts(limit: Int = 100): List<DataConflict> {
+        val out = mutableListOf<DataConflict>()
+
+        readableDatabase.rawQuery(
+            """
+                SELECT passport, GROUP_CONCAT(name, ' • '), COUNT(*)
+                FROM passengers
+                WHERE merged_into_id IS NULL AND passport IS NOT NULL AND TRIM(passport)<>''
+                GROUP BY UPPER(REPLACE(passport,' ',''))
+                HAVING COUNT(*)>1
+                LIMIT 20
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += DataConflict("PASSPORT", "جواز مكرر: " + cursor.getString(0), cursor.getString(1))
+            }
+        }
+
+        readableDatabase.rawQuery(
+            """
+                SELECT phone, GROUP_CONCAT(name, ' • '), COUNT(*)
+                FROM passengers
+                WHERE merged_into_id IS NULL AND phone IS NOT NULL AND TRIM(phone)<>''
+                GROUP BY phone
+                HAVING COUNT(*)>1
+                LIMIT 20
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += DataConflict("PHONE", "هاتف مكرر: " + cursor.getString(0), cursor.getString(1))
+            }
+        }
+
+        readableDatabase.rawQuery(
+            """
+                SELECT a.kind, a.normalized_value, GROUP_CONCAT(DISTINCT COALESCE(NULLIF(p.merged_into_id,''),p.id))
+                FROM passenger_aliases a
+                JOIN passengers p ON p.id=a.passenger_id
+                GROUP BY a.kind, a.normalized_value
+                HAVING COUNT(DISTINCT COALESCE(NULLIF(p.merged_into_id,''),p.id))>1
+                LIMIT 20
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += DataConflict(
+                    "ALIAS",
+                    "ارتباط هوية مكرر: " + cursor.getString(0) + " / " + cursor.getString(1),
+                    "مرتبط بأكثر من ملف شخص"
+                )
+            }
+        }
+
+        readableDatabase.rawQuery(
+            """
+                SELECT t.id, COALESCE(t.operation_no,t.pnr,t.id), COUNT(DISTINCT
+                    CASE
+                        WHEN p.responsible_id IS NOT NULL THEN p.responsible_id
+                        WHEN p.is_responsible=1 THEN COALESCE(NULLIF(p.merged_into_id,''),p.id)
+                        ELSE NULL
+                    END
+                ) AS responsible_count
+                FROM transactions t
+                JOIN tx_passengers tp ON tp.tx_id=t.id
+                JOIN passengers p ON p.id=tp.passenger_id
+                GROUP BY t.id
+                HAVING responsible_count>1
+                LIMIT 20
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += DataConflict(
+                    "RESPONSIBLE",
+                    "تعارض مسؤولين في عملية " + cursor.getString(1),
+                    "يوجد أكثر من مسؤول داخل نفس مجموعة المسافرين"
+                )
+            }
+        }
+
+        readableDatabase.rawQuery(
+            """
+                SELECT t.id, COALESCE(t.operation_no,t.pnr,t.id), t.type
+                FROM transactions t
+                LEFT JOIN tx_passengers tp ON tp.tx_id=t.id
+                WHERE tp.tx_id IS NULL AND t.type<>'PAYMENT'
+                LIMIT 20
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += DataConflict(
+                    "NO_PASSENGERS",
+                    "عملية بلا مسافرين: " + cursor.getString(1),
+                    cursor.getString(2)
+                )
+            }
+        }
+
+        return out.take(limit)
     }
 
     fun setting(key: String, default: String = ""): String {
