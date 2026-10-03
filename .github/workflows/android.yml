@@ -1,6 +1,7 @@
 name: Build Eslam Check APK
 on:
   workflow_dispatch:
+  pull_request:
   push:
     branches: [ main, bridge-v0.2, v0.3-audit-upgrade, v0.4-smart-audit, v0.4.1-passenger-merge, v0.4.2-review-flow, v0.4.3-receipts-smart-delete, v0.4.4-responsibility-review-fix, v0.4.5-stars-commission-review-cards, v0.4.6-phone-visa-ux ]
 
