@@ -18,7 +18,9 @@ data class CommissionResult(
     val isWithinTolerance: Boolean,
     val needsInput: Boolean,
     val explanation: String,
-    val rows: List<PassengerCommission> = emptyList()
+    val rows: List<PassengerCommission> = emptyList(),
+    val inferredRate: Double? = null,
+    val inferredFromDiscount: Boolean = false
 )
 
 object CommissionEngine {
@@ -31,8 +33,14 @@ object CommissionEngine {
         tolerance: Double,
         route: String?
     ): CommissionResult {
-        if (rule == null) {
-            return CommissionResult(null, null, null, false, true, "اختر شركة الطيران أولًا")
+        if (rule == null || rule.kind == RuleKind.PRIVATE_MANUAL) {
+            return inferFromDiscount(
+                passengers = passengers,
+                actualSettlement = actualSettlement,
+                actualDiscount = actualDiscount,
+                tolerance = tolerance,
+                privateNote = rule?.note
+            )
         }
 
         val count = passengers.size.coerceAtLeast(1)
@@ -61,14 +69,18 @@ object CommissionEngine {
                     val settlement = if (gross > 0.0) gross - expected else null
                     val discountDiff = actualDiscount - expected
                     val settlementDiff = settlement?.let { actualSettlement - it }
-                    val within = abs(discountDiff) <= tolerance && (settlementDiff == null || abs(settlementDiff) <= tolerance)
+                    val within = abs(discountDiff) <= tolerance &&
+                        (settlementDiff == null || abs(settlementDiff) <= tolerance)
                     CommissionResult(
                         expectedCommission = expected,
                         expectedSettlement = settlement,
                         difference = discountDiff,
                         isWithinTolerance = within,
                         needsInput = false,
-                        explanation = if (within) "العمولة والتسديد مطابقان ضمن هامش السماح" else "يوجد فرق بين العمولة المتوقعة وDiscount المصدر",
+                        explanation = if (within)
+                            "العمولة والتسديد مطابقان ضمن هامش السماح"
+                        else
+                            "يوجد فرق بين العمولة المتوقعة وDiscount المصدر",
                         rows = rows
                     )
                 }
@@ -81,6 +93,13 @@ object CommissionEngine {
                 val feeEach = if (isRoundTrip) rule.roundTripValue ?: rule.value else rule.value
                 val totalFee = feeEach * count
                 val expectedSettlement = referenceTotal?.plus(totalFee)
+                val rows = passengers.map {
+                    PassengerCommission(
+                        passengerId = it.passenger.id,
+                        baseFare = it.baseFare,
+                        expectedCommission = feeEach
+                    )
+                }
                 if (referenceTotal == null) {
                     CommissionResult(
                         expectedCommission = totalFee,
@@ -88,7 +107,8 @@ object CommissionEngine {
                         difference = null,
                         isWithinTolerance = false,
                         needsInput = true,
-                        explanation = "رسم الإصدار ${format(feeEach)} لكل مسافر. أدخل سعر التذاكر قبل رسم الإصدار للتدقيق."
+                        explanation = "رسم الإصدار " + format(feeEach) + " لكل مسافر. أدخل سعر التذاكر قبل رسم الإصدار للتدقيق.",
+                        rows = rows
                     )
                 } else {
                     val diff = actualSettlement - expectedSettlement!!
@@ -98,7 +118,11 @@ object CommissionEngine {
                         difference = diff,
                         isWithinTolerance = abs(diff) <= tolerance,
                         needsInput = false,
-                        explanation = if (abs(diff) <= tolerance) "التسديد مطابق مع رسم الإصدار" else "يوجد فرق في التسديد بعد رسم الإصدار"
+                        explanation = if (abs(diff) <= tolerance)
+                            "التسديد مطابق مع رسم الإصدار"
+                        else
+                            "يوجد فرق في التسديد بعد رسم الإصدار",
+                        rows = rows
                     )
                 }
             }
@@ -112,19 +136,76 @@ object CommissionEngine {
                     difference = diff,
                     isWithinTolerance = diff == null || abs(diff) <= tolerance,
                     needsInput = false,
-                    explanation = if (diff == null || abs(diff) <= tolerance) "بدون عمولة" else "يوجد فرق في التسديد"
+                    explanation = if (diff == null || abs(diff) <= tolerance) "بدون عمولة" else "يوجد فرق في التسديد",
+                    rows = passengers.map { PassengerCommission(it.passenger.id, it.baseFare, 0.0) }
                 )
             }
 
-            RuleKind.PRIVATE_MANUAL -> CommissionResult(
+            RuleKind.PRIVATE_MANUAL -> error("handled above")
+        }
+    }
+
+    private fun inferFromDiscount(
+        passengers: List<TxPassengerDetail>,
+        actualSettlement: Double,
+        actualDiscount: Double,
+        tolerance: Double,
+        privateNote: String?
+    ): CommissionResult {
+        val rowsWithoutCommission = passengers.map {
+            PassengerCommission(it.passenger.id, it.baseFare, null)
+        }
+        if (passengers.isEmpty() || passengers.any { it.baseFare == null }) {
+            return CommissionResult(
                 expectedCommission = null,
                 expectedSettlement = null,
                 difference = null,
                 isWithinTolerance = false,
                 needsInput = true,
-                explanation = rule.note?.takeIf { it.isNotBlank() } ?: "العمولة خاصة/متغيرة وتحتاج اختيار القاعدة الصحيحة"
+                explanation = privateNote?.takeIf { it.isNotBlank() }
+                    ?: "لا توجد قاعدة رقمية. أدخل Base Fare للمسافرين لأستنتج نسبة العمولة من Discount.",
+                rows = rowsWithoutCommission
             )
         }
+
+        val totalBase = passengers.sumOf { it.baseFare ?: 0.0 }
+        if (totalBase <= 0.0) {
+            return CommissionResult(
+                expectedCommission = null,
+                expectedSettlement = null,
+                difference = null,
+                isWithinTolerance = false,
+                needsInput = true,
+                explanation = "مجموع Base Fare يجب أن يكون أكبر من صفر لاستنتاج العمولة.",
+                rows = rowsWithoutCommission
+            )
+        }
+
+        val rate = (actualDiscount / totalBase) * 100.0
+        val rows = passengers.map {
+            val base = it.baseFare ?: 0.0
+            PassengerCommission(
+                passengerId = it.passenger.id,
+                baseFare = base,
+                expectedCommission = base * rate / 100.0
+            )
+        }
+        val gross = passengers.mapNotNull { it.amount }.sum()
+        val settlement = if (gross > 0.0) gross - actualDiscount else null
+        val settlementDiff = settlement?.let { actualSettlement - it }
+        val within = settlementDiff == null || abs(settlementDiff) <= tolerance
+
+        return CommissionResult(
+            expectedCommission = rows.sumOf { it.expectedCommission ?: 0.0 },
+            expectedSettlement = settlement,
+            difference = settlementDiff,
+            isWithinTolerance = within,
+            needsInput = false,
+            explanation = "النسبة الفعلية المستنتجة من Discount = " + String.format("%.2f", rate) + "%",
+            rows = rows,
+            inferredRate = rate,
+            inferredFromDiscount = true
+        )
     }
 
     private fun format(value: Double): String =
