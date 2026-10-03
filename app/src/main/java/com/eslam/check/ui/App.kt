@@ -643,23 +643,56 @@ private fun cardAuditSummary(vm: MainViewModel, tx: Transaction): CardAuditSumma
 }
 
 @Composable
+private fun PassengerStarRating(
+    rating: Int,
+    onRatingChanged: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
+) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        (1..5).forEach { star ->
+            IconButton(
+                onClick = { onRatingChanged(if (rating == star) 0 else star) },
+                modifier = Modifier.size(if (compact) 24.dp else 30.dp)
+            ) {
+                Icon(
+                    if (star <= rating) Icons.Rounded.Star else Icons.Rounded.StarBorder,
+                    contentDescription = star.toString() + " نجوم",
+                    tint = if (star <= rating) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(if (compact) 17.dp else 21.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
     val passengers by vm.passengers.collectAsState()
     var search by remember { mutableStateOf("") }
     var category by remember { mutableStateOf(PassengerCategory.ALL) }
+    var ratingFilter by remember { mutableStateOf<Int?>(null) }
+    var sortMode by remember { mutableStateOf("NAME") }
     var selected by remember { mutableStateOf<Passenger?>(null) }
     var mergeMode by remember { mutableStateOf(false) }
     var mergeSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showMergeDialog by remember { mutableStateOf(false) }
 
-    val filtered = remember(passengers, search, category) {
+    val filtered = remember(passengers, search, category, ratingFilter, sortMode) {
         val base = if (search.isBlank()) passengers else vm.passengerSuggestions(search)
         base.filter { p ->
-            when (category) {
+            val categoryOk = when (category) {
                 PassengerCategory.ALL -> true
                 PassengerCategory.RESPONSIBLE -> p.isResponsible
                 PassengerCategory.DEPENDENT -> p.responsibleId != null
                 PassengerCategory.INDEPENDENT -> !p.isResponsible && p.responsibleId == null
+            }
+            categoryOk && (ratingFilter == null || p.rating == ratingFilter)
+        }.let { list ->
+            when (sortMode) {
+                "HIGH" -> list.sortedWith(compareByDescending<Passenger> { it.rating }.thenBy { it.name.lowercase() })
+                "LOW" -> list.sortedWith(compareBy<Passenger> { it.rating }.thenBy { it.name.lowercase() })
+                else -> list.sortedBy { it.name.lowercase() }
             }
         }
     }
@@ -706,6 +739,38 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
             ).forEach { (key, label) ->
                 FilterChip(selected = category == key, onClick = { category = key }, label = { Text(label) })
             }
+        }
+
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            FilterChip(
+                selected = ratingFilter == null,
+                onClick = { ratingFilter = null },
+                label = { Text("كل النجوم") }
+            )
+            (5 downTo 1).forEach { stars ->
+                FilterChip(
+                    selected = ratingFilter == stars,
+                    onClick = { ratingFilter = if (ratingFilter == stars) null else stars },
+                    label = { Text(stars.toString() + " ★") }
+                )
+            }
+            FilterChip(
+                selected = ratingFilter == 0,
+                onClick = { ratingFilter = if (ratingFilter == 0) null else 0 },
+                label = { Text("بدون تقييم") }
+            )
+        }
+
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            FilterChip(selected = sortMode == "NAME", onClick = { sortMode = "NAME" }, label = { Text("الاسم") })
+            FilterChip(selected = sortMode == "HIGH", onClick = { sortMode = "HIGH" }, label = { Text("الأعلى ⭐") })
+            FilterChip(selected = sortMode == "LOW", onClick = { sortMode = "LOW" }, label = { Text("الأقل ⭐") })
         }
 
         if (mergeMode) {
@@ -755,6 +820,11 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(p.name, fontWeight = FontWeight.Bold)
+                            PassengerStarRating(
+                                rating = p.rating,
+                                onRatingChanged = { vm.setPassengerRating(p.id, it) },
+                                compact = true
+                            )
                             Text(
                                 when {
                                     p.isResponsible -> "مسؤول • " + vm.dependentsOf(p.id).size + " تابع"
@@ -967,6 +1037,27 @@ private fun PassengerDetailDialog(
                 LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     item {
                         OutlinedTextField(edit.name, { edit = edit.copy(name = it) }, Modifier.fillMaxWidth(), label = { Text("الاسم") })
+                    }
+
+                    item {
+                        Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("تقييم المسافر", fontWeight = FontWeight.Bold)
+                                    Text("تقييم يدوي من 0 إلى 5 نجوم", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                PassengerStarRating(
+                                    rating = edit.rating,
+                                    onRatingChanged = { rating ->
+                                        edit = edit.copy(rating = rating)
+                                        vm.setPassengerRating(edit.id, rating)
+                                    }
+                                )
+                            }
+                        }
                     }
 
                     item {
