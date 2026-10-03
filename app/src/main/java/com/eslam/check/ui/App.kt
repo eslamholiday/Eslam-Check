@@ -680,7 +680,7 @@ private fun PassengerStarRating(
                 modifier = Modifier.size(if (compact) 24.dp else 30.dp)
             ) {
                 Icon(
-                    if (star <= rating) Icons.Rounded.Star else Icons.Rounded.StarBorder,
+                    if (star <= rating) Icons.Rounded.Star else Icons.Rounded.StarOutline,
                     contentDescription = star.toString() + " نجوم",
                     tint = if (star <= rating) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(if (compact) 17.dp else 21.dp)
@@ -2889,7 +2889,7 @@ private fun TransactionDetailDialog(
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
                                     Text("المسافرون داخل PNR", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                                    Text("Base Fare لكل مسافر → Taxes → العمولة المتوقعة → المقارنة مع Discount.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("أدخل Base Fare لكل مسافر ليحسب التطبيق Taxes والعمولة المتوقعة ثم يقارنها مع Discount.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 if (details.isNotEmpty()) {
                                     TextButton(onClick = { responsiblePicker = true }) {
