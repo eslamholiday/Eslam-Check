@@ -483,6 +483,48 @@ private data class CardAuditSummary(
     val color: Color
 )
 
+private data class VisaPriceAudit(
+    val rule: VisaPriceRule?,
+    val expectedTotal: Double? = null,
+    val actualTotal: Double? = null,
+    val difference: Double? = null,
+    val statusText: String,
+    val color: Color
+)
+
+private fun visaPriceAudit(
+    vm: MainViewModel,
+    tx: Transaction,
+    details: List<TxPassengerDetail>
+): VisaPriceAudit {
+    if (tx.type == TxType.VOID) {
+        return VisaPriceAudit(null, statusText = "فيزا ملغاة", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    val visaType = details.asSequence()
+        .mapNotNull { it.product?.takeIf(String::isNotBlank) }
+        .firstOrNull()
+    val rule = vm.visaPriceFor(tx.visaCountry, visaType, tx.currency)
+        ?: return VisaPriceAudit(null, statusText = "لا يوجد سعر فيزا افتراضي محفوظ", color = Warn)
+    val price = rule.price
+        ?: return VisaPriceAudit(rule, statusText = "السعر الافتراضي غير مدخل بعد", color = Warn)
+
+    val passengerCount = details.size.coerceAtLeast(1)
+    val expected = price * passengerCount
+    val detailAmounts = details.mapNotNull { it.amount }
+    val actual = if (details.isNotEmpty() && detailAmounts.size == details.size) detailAmounts.sum() else tx.amount
+    val diff = actual - expected
+    val tolerance = if (tx.currency == Currency.USD) {
+        vm.setting("visa_usd_tolerance", "0.01").toDoubleOrNull() ?: 0.01
+    } else {
+        vm.setting("visa_iqd_tolerance", "1000").toDoubleOrNull() ?: 1000.0
+    }
+    return when {
+        kotlin.math.abs(diff) <= tolerance -> VisaPriceAudit(rule, expected, actual, diff, "✓ سعر الفيزا مطابق", Good)
+        diff > 0 -> VisaPriceAudit(rule, expected, actual, diff, "السعر أعلى من الافتراضي", Bad)
+        else -> VisaPriceAudit(rule, expected, actual, diff, "السعر أقل من الافتراضي", Warn)
+    }
+}
+
 @Composable
 private fun TransactionCard(
     vm: MainViewModel,
@@ -615,6 +657,10 @@ private fun TransactionCard(
 private fun cardAuditSummary(vm: MainViewModel, tx: Transaction): CardAuditSummary? {
     if (tx.changedAfterReview) return CardAuditSummary("⚠ تغيّرت بعد المراجعة", Warn)
     if (tx.type == TxType.UNKNOWN) return CardAuditSummary("؟ نوع العملية مبهم", Mystery)
+    if (tx.type == TxType.VISA) {
+        val visa = visaPriceAudit(vm, tx, vm.txPassengerDetails(tx.id))
+        return CardAuditSummary(visa.statusText, visa.color)
+    }
     if (tx.type != TxType.TICKET) return null
     if (tx.currency == Currency.USD && tx.airline.isNullOrBlank()) {
         return CardAuditSummary("؟ خط غير محدد", Mystery)
