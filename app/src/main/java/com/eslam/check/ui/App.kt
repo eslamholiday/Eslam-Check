@@ -2998,6 +2998,9 @@ private fun TransactionDetailDialog(
     var rawOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
     var reviewSaving by remember(id) { mutableStateOf(false) }
+    var commissionDetailsExpanded by remember(id) {
+        mutableStateOf(details.any { it.baseFare == null })
+    }
     var baseFareDrafts by remember(id) { mutableStateOf<Map<String, Double?>>(emptyMap()) }
     var attachments by remember(id) { mutableStateOf(vm.transactionAttachments(id)) }
     var receiptPreview by remember { mutableStateOf<TransactionAttachment?>(null) }
@@ -3233,7 +3236,33 @@ private fun TransactionDetailDialog(
                         if (details.isEmpty()) {
                             item { Text("لا توجد تفاصيل مسافرين في المصدر.", color = Warn) }
                         } else {
-                            items(details, key = { it.passenger.id }) { d ->
+                            item {
+                                val completed = effectiveDetails.count { it.baseFare != null }
+                                val total = effectiveDetails.size.coerceAtLeast(1)
+                                Surface(shape = RoundedCornerShape(14.dp), tonalElevation = 1.dp) {
+                                    Column(
+                                        Modifier.fillMaxWidth().padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Row(
+                                            Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("Base Fare: " + completed + "/" + total + " مكتمل", fontWeight = FontWeight.SemiBold)
+                                            TextButton(onClick = { commissionDetailsExpanded = !commissionDetailsExpanded }) {
+                                                Text(if (commissionDetailsExpanded) "إخفاء التفاصيل" else "تفاصيل الحساب")
+                                            }
+                                        }
+                                        LinearProgressIndicator(
+                                            progress = { completed.toFloat() / total.toFloat() },
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                }
+                            }
+                            if (commissionDetailsExpanded) {
+                                items(details, key = { it.passenger.id }) { d ->
                                 val rowCommission = commission.rows.firstOrNull { it.passengerId == d.passenger.id }?.expectedCommission
                                 PassengerAuditCard(
                                     tx = edit,
@@ -3257,6 +3286,7 @@ private fun TransactionDetailDialog(
                                     onOpenPassenger = { selectedPassenger = it },
                                     onDeleteLink = { deletePassengerTarget = it }
                                 )
+                                }
                             }
                         }
 
@@ -3266,7 +3296,16 @@ private fun TransactionDetailDialog(
                                 color = if (commission.isWithinTolerance) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
                             ) {
                                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text("نتيجة مراجعة العمولة", fontWeight = FontWeight.Bold)
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("نتيجة مراجعة العمولة", fontWeight = FontWeight.Bold)
+                                        TextButton(onClick = { commissionDetailsExpanded = !commissionDetailsExpanded }) {
+                                            Text(if (commissionDetailsExpanded) "مختصر" else "تفاصيل")
+                                        }
+                                    }
 
                                     when {
                                         commission.inferredFromDiscount -> {
@@ -3293,17 +3332,19 @@ private fun TransactionDetailDialog(
                                         }
                                     }
 
-                                    commission.rows.mapNotNull { row ->
-                                        val amount = row.expectedCommission ?: return@mapNotNull null
-                                        val detail = details.firstOrNull { it.passenger.id == row.passengerId } ?: return@mapNotNull null
-                                        val name = detail.sourceName ?: detail.passenger.name
-                                        name to amount
-                                    }.forEach { (name, amount) ->
-                                        Text(
-                                            name + ": " + formatMoney(amount, edit.currency),
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                    if (commissionDetailsExpanded) {
+                                        commission.rows.mapNotNull { row ->
+                                            val amount = row.expectedCommission ?: return@mapNotNull null
+                                            val detail = details.firstOrNull { it.passenger.id == row.passengerId } ?: return@mapNotNull null
+                                            val name = detail.sourceName ?: detail.passenger.name
+                                            name to amount
+                                        }.forEach { (name, amount) ->
+                                            Text(
+                                                name + ": " + formatMoney(amount, edit.currency),
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                     }
 
                                     commission.expectedCommission?.let {
@@ -3341,20 +3382,22 @@ private fun TransactionDetailDialog(
                                             }
                                         }
                                     }
-                                    commission.expectedSettlement?.let { Text("التسديد المتوقع: " + formatMoney(it, edit.currency)) }
+                                    if (commissionDetailsExpanded) {
+                                        commission.expectedSettlement?.let { Text("التسديد المتوقع: " + formatMoney(it, edit.currency)) }
 
-                                    Text(
-                                        commission.explanation,
-                                        color = when {
-                                            commission.inferredFromDiscount -> MaterialTheme.colorScheme.primary
-                                            commission.isWithinTolerance -> Good
-                                            commission.needsInput -> Warn
-                                            else -> Bad
+                                        Text(
+                                            commission.explanation,
+                                            color = when {
+                                                commission.inferredFromDiscount -> MaterialTheme.colorScheme.primary
+                                                commission.isWithinTolerance -> Good
+                                                commission.needsInput -> Warn
+                                                else -> Bad
+                                            }
+                                        )
+                                        edit.commissionRuleSnapshot?.let {
+                                            HorizontalDivider()
+                                            Text("Snapshot المراجعة محفوظ", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                                         }
-                                    )
-                                    edit.commissionRuleSnapshot?.let {
-                                        HorizontalDivider()
-                                        Text("Snapshot المراجعة محفوظ", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                                     }
                                 }
                             }
