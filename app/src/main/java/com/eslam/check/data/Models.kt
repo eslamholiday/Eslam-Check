@@ -135,6 +135,13 @@ data class DeletedPassengerLink(
     val deletedAt: Long = System.currentTimeMillis()
 )
 
+data class PassengerNetworkNode(
+    val passenger: Passenger,
+    val viaPassengerName: String? = null,
+    val operationNo: String? = null,
+    val pnr: String? = null
+)
+
 data class PassengerActivityStats(
     val passengerId: String,
     val total: Int = 0,
