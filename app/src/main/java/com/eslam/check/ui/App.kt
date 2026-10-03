@@ -2817,6 +2817,40 @@ private fun TransactionDetailDialog(
                     if (edit.type == TxType.REFUND) {
                         item { SettingsInfoCard("استرجاع", "يسجل ويراجع فقط؛ لا يظهر Discount ولا يتم فرض معادلة استرجاع تلقائية.") }
                     }
+
+                    if (edit.type in setOf(TxType.CHANGE, TxType.REFUND, TxType.REISSUE, TxType.FEE, TxType.UNKNOWN) && details.isNotEmpty()) {
+                        item {
+                            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text("المسافرون", fontWeight = FontWeight.Bold)
+                                    details.forEach { d ->
+                                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                d.passenger.name,
+                                                Modifier.weight(1f).clickable { selectedPassenger = d.passenger },
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            d.documentNo?.let { Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                            IconButton(
+                                                onClick = { copyToClipboard(context, "الاسم", d.passenger.name) },
+                                                modifier = Modifier.size(30.dp)
+                                            ) {
+                                                Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
+                                            }
+                                            IconButton(
+                                                onClick = { deletePassengerTarget = d.passenger },
+                                                modifier = Modifier.size(30.dp)
+                                            ) {
+                                                Icon(Icons.Rounded.PersonRemove, "حذف الارتباط", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if (edit.type == TxType.PAYMENT) {
                         item {
                             Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
