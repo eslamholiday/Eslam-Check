@@ -638,7 +638,7 @@ private fun cardAuditSummary(vm: MainViewModel, tx: Transaction): CardAuditSumma
         vm.setting("iqd_tolerance", "1000").toDoubleOrNull() ?: 1000.0
 
     val result = CommissionEngine.calculate(
-        passengers = details,
+        passengers = effectiveDetails,
         actualSettlement = tx.amount,
         actualDiscount = tx.discount,
         referenceTotal = tx.referenceTotal,
@@ -2668,6 +2668,7 @@ private fun TransactionDetailDialog(
     var rawOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
     var reviewSaving by remember(id) { mutableStateOf(false) }
+    var baseFareDrafts by remember(id) { mutableStateOf<Map<String, Double?>>(emptyMap()) }
     var attachments by remember(id) { mutableStateOf(vm.transactionAttachments(id)) }
     var receiptPreview by remember { mutableStateOf<TransactionAttachment?>(null) }
     var replaceAttachmentId by remember { mutableStateOf<String?>(null) }
@@ -2701,6 +2702,11 @@ private fun TransactionDetailDialog(
     }
 
     val rule = vm.ruleForTransaction(edit)
+    val effectiveDetails = details.map { detail ->
+        if (baseFareDrafts.containsKey(detail.passenger.id)) {
+            detail.copy(baseFare = baseFareDrafts[detail.passenger.id])
+        } else detail
+    }
     val tolerance = if (edit.currency == Currency.USD) {
         vm.setting("usd_tolerance", "1").toDoubleOrNull() ?: 1.0
     } else {
@@ -2900,11 +2906,19 @@ private fun TransactionDetailDialog(
                                     detail = d,
                                     commissionForPassenger = rowCommission,
                                     inferredCommission = commission.inferredFromDiscount,
+                                    onBaseFareDraftChange = { passengerId, value ->
+                                        baseFareDrafts = baseFareDrafts + (passengerId to value)
+                                    },
                                     onBaseFareCommit = { passengerId, value ->
-                                        val others = details.filter { it.passenger.id != passengerId }
+                                        val others = effectiveDetails.filter { it.passenger.id != passengerId }
                                         val applyToAll = value != null && others.isNotEmpty() && others.all { it.baseFare == null }
-                                        if (applyToAll) vm.setPassengerBaseFareForAll(edit.id, value)
-                                        else vm.setPassengerBaseFare(edit.id, passengerId, value)
+                                        if (applyToAll) {
+                                            baseFareDrafts = effectiveDetails.associate { it.passenger.id to value }
+                                            vm.setPassengerBaseFareForAll(edit.id, value)
+                                        } else {
+                                            baseFareDrafts = baseFareDrafts + (passengerId to value)
+                                            vm.setPassengerBaseFare(edit.id, passengerId, value)
+                                        }
                                     },
                                     onOpenPassenger = { selectedPassenger = it },
                                     onDeleteLink = { deletePassengerTarget = it }
@@ -3778,6 +3792,7 @@ private fun PassengerAuditCard(
     detail: TxPassengerDetail,
     commissionForPassenger: Double?,
     inferredCommission: Boolean,
+    onBaseFareDraftChange: (String, Double?) -> Unit,
     onBaseFareCommit: (String, Double?) -> Unit,
     onOpenPassenger: (Passenger) -> Unit,
     onDeleteLink: (Passenger) -> Unit
@@ -3850,7 +3865,13 @@ private fun PassengerAuditCard(
 
             OutlinedTextField(
                 value = baseText,
-                onValueChange = { baseText = it },
+                onValueChange = { text ->
+                    baseText = text
+                    when {
+                        text.isBlank() -> onBaseFareDraftChange(detail.passenger.id, null)
+                        else -> text.toDoubleOrNull()?.let { onBaseFareDraftChange(detail.passenger.id, it) }
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .onFocusChanged { state -> if (!state.isFocused) commitBaseFare() },
