@@ -2764,11 +2764,11 @@ private fun TransactionDetailDialog(
                                     Text("المسافرون داخل PNR", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                                     Text("Base Fare لكل مسافر → Taxes → العمولة المتوقعة → المقارنة مع Discount.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                if (details.size > 1 && responsible == null) {
+                                if (details.isNotEmpty()) {
                                     TextButton(onClick = { responsiblePicker = true }) {
                                         Icon(Icons.Rounded.SupervisorAccount, null)
                                         Spacer(Modifier.width(3.dp))
-                                        Text("تحديد مسؤول")
+                                        Text(if (responsible == null) "تحديد مسؤول" else "تغيير المسؤول")
                                     }
                                 }
                             }
@@ -2901,11 +2901,11 @@ private fun TransactionDetailDialog(
                                             }
                                         }
                                     }
-                                    if (details.size > 1 && responsible == null) {
+                                    if (details.isNotEmpty()) {
                                         OutlinedButton(onClick = { responsiblePicker = true }, modifier = Modifier.fillMaxWidth()) {
                                             Icon(Icons.Rounded.SupervisorAccount, null)
                                             Spacer(Modifier.width(5.dp))
-                                            Text("تعيين مسؤول لهذه المعاملة")
+                                            Text(if (responsible == null) "تعيين مسؤول لهذه المعاملة" else "تغيير المسؤول")
                                         }
                                     }
                                 }
