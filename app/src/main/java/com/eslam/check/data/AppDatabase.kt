@@ -891,7 +891,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         writableDatabase.insertWithOnConflict("tx_passengers", null, ContentValues().apply {
             put("tx_id", txId)
             put("passenger_id", passengerId)
-            put("source_name", sourceName?.trim()?.takeIf { it.isNotBlank() } ?: existing?.second)
+            put("source_name", existing?.second ?: sourceName?.trim()?.takeIf { it.isNotBlank() })
             put("amount", amount)
             put("base_fare", existing?.first)
             put("passenger_type", passengerType)
