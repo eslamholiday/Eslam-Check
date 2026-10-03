@@ -1967,6 +1967,54 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         return direct.singleOrNull()
     }
 
+    fun passengerNetwork(passengerId: String): List<PassengerNetworkNode> {
+        val root = resolveCanonicalPassengerId(passengerId)
+        val rootPassenger = passengerById(root) ?: return emptyList()
+        val out = mutableListOf(PassengerNetworkNode(rootPassenger))
+        val seen = linkedSetOf(root)
+        val queue = ArrayDeque<String>()
+        queue.add(root)
+
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            val currentPassenger = passengerById(current) ?: continue
+            val groupIds = mergedGroupIds(current)
+            if (groupIds.isEmpty()) continue
+            val groupPlaceholders = groupIds.joinToString(",") { "?" }
+
+            val txs = mutableListOf<Transaction>()
+            readableDatabase.rawQuery(
+                """
+                    SELECT DISTINCT t.*
+                    FROM transactions t
+                    JOIN tx_passengers tp ON tp.tx_id=t.id
+                    WHERE tp.passenger_id IN ($groupPlaceholders)
+                    ORDER BY t.imported_at DESC
+                """.trimIndent(),
+                groupIds.toTypedArray()
+            ).use { cursor ->
+                while (cursor.moveToNext()) txs += cursor.toTransaction()
+            }
+
+            txs.forEach { tx ->
+                passengersFor(tx.id).forEach { p ->
+                    val canonical = resolveCanonicalPassengerId(p.id)
+                    if (seen.add(canonical)) {
+                        val passenger = passengerById(canonical) ?: p
+                        out += PassengerNetworkNode(
+                            passenger = passenger,
+                            viaPassengerName = currentPassenger.name,
+                            operationNo = tx.operationNo,
+                            pnr = tx.pnr
+                        )
+                        queue.add(canonical)
+                    }
+                }
+            }
+        }
+        return out
+    }
+
     private fun connectedPassengerIds(seedIds: Collection<String>): LinkedHashSet<String> {
         val connected = linkedSetOf<String>()
         val queue = ArrayDeque<String>()
