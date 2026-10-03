@@ -2823,7 +2823,8 @@ private fun TransactionDetailDialog(
 
                                     commission.rows.mapNotNull { row ->
                                         val amount = row.expectedCommission ?: return@mapNotNull null
-                                        val name = details.firstOrNull { it.passenger.id == row.passengerId }?.passenger?.name ?: return@mapNotNull null
+                                        val detail = details.firstOrNull { it.passenger.id == row.passengerId } ?: return@mapNotNull null
+                                        val name = detail.sourceName ?: detail.passenger.name
                                         name to amount
                                     }.forEach { (name, amount) ->
                                         Text(
@@ -2883,13 +2884,13 @@ private fun TransactionDetailDialog(
                                     details.forEach { d ->
                                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                             Text(
-                                                d.passenger.name,
+                                                d.sourceName ?: d.passenger.name,
                                                 Modifier.weight(1f).clickable { selectedPassenger = d.passenger },
                                                 color = MaterialTheme.colorScheme.primary,
                                                 fontWeight = FontWeight.SemiBold
                                             )
                                             d.amount?.let { Text(formatMoney(it, edit.currency)) }
-                                            IconButton(onClick = { copyToClipboard(context, "الاسم", d.passenger.name) }, modifier = Modifier.size(30.dp)) {
+                                            IconButton(onClick = { copyToClipboard(context, "الاسم", d.sourceName ?: d.passenger.name) }, modifier = Modifier.size(30.dp)) {
                                                 Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
                                             }
                                             IconButton(
@@ -2927,14 +2928,14 @@ private fun TransactionDetailDialog(
                                     details.forEach { d ->
                                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                             Text(
-                                                d.passenger.name,
+                                                d.sourceName ?: d.passenger.name,
                                                 Modifier.weight(1f).clickable { selectedPassenger = d.passenger },
                                                 color = MaterialTheme.colorScheme.primary,
                                                 fontWeight = FontWeight.SemiBold
                                             )
                                             d.documentNo?.let { Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                                             IconButton(
-                                                onClick = { copyToClipboard(context, "الاسم", d.passenger.name) },
+                                                onClick = { copyToClipboard(context, "الاسم", d.sourceName ?: d.passenger.name) },
                                                 modifier = Modifier.size(30.dp)
                                             ) {
                                                 Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
@@ -3562,13 +3563,13 @@ private fun PassengerAuditCard(
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    detail.passenger.name,
+                    detail.sourceName ?: detail.passenger.name,
                     modifier = Modifier.weight(1f).clickable { onOpenPassenger(detail.passenger) },
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
                 IconButton(
-                    onClick = { copyToClipboard(context, "الاسم", detail.passenger.name) },
+                    onClick = { copyToClipboard(context, "الاسم", detail.sourceName ?: detail.passenger.name) },
                     modifier = Modifier.size(30.dp)
                 ) {
                     Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
