@@ -3799,7 +3799,11 @@ private fun TransactionDetailDialog(
                         item {
                             Surface(
                                 shape = RoundedCornerShape(16.dp),
-                                color = if (commission.isWithinTolerance) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                                color = when {
+                                    commission.needsInput -> Warn.copy(alpha = 0.10f)
+                                    commission.isWithinTolerance -> Good.copy(alpha = 0.10f)
+                                    else -> Bad.copy(alpha = 0.10f)
+                                }
                             ) {
                                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Row(
@@ -3807,7 +3811,23 @@ private fun TransactionDetailDialog(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text("نتيجة مراجعة العمولة", fontWeight = FontWeight.Bold)
+                                        Column {
+                                            Text("نتيجة مراجعة العمولة", fontWeight = FontWeight.Bold)
+                                            Text(
+                                                when {
+                                                    commission.needsInput -> "ناقص بيانات"
+                                                    commission.isWithinTolerance -> "مطابق"
+                                                    else -> "يوجد فرق"
+                                                },
+                                                fontSize = 12.sp,
+                                                color = when {
+                                                    commission.needsInput -> Warn
+                                                    commission.isWithinTolerance -> Good
+                                                    else -> Bad
+                                                },
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
                                         TextButton(onClick = { commissionDetailsExpanded = !commissionDetailsExpanded }) {
                                             Text(if (commissionDetailsExpanded) "مختصر" else "تفاصيل")
                                         }
