@@ -8,7 +8,25 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 8) {
+class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 9) {
+    override fun onConfigure(db: SQLiteDatabase) {
+        super.onConfigure(db)
+        val currentVersion = db.version
+        if (currentVersion in 1 until 9) {
+            try {
+                db.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
+                    if (cursor.moveToFirst()) { /* force checkpoint result */ }
+                }
+            } catch (_: Exception) { }
+            try {
+                val backupDir = java.io.File(context.filesDir, "backups").apply { mkdirs() }
+                val backup = java.io.File(backupDir, "preupgrade-v" + currentVersion + "-to-v9.db")
+                val source = context.getDatabasePath("eslam_check.db")
+                if (source.exists() && !backup.exists()) source.copyTo(backup, overwrite = false)
+            } catch (_: Exception) { }
+        }
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE transactions(
@@ -203,6 +221,20 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 updated_at INTEGER NOT NULL
             )
         """.trimIndent())
+
+        db.execSQL("""
+            CREATE TABLE visa_price_rules(
+                id TEXT PRIMARY KEY,
+                country TEXT NOT NULL,
+                visa_type TEXT,
+                price REAL,
+                currency TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                note TEXT,
+                updated_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_visa_price_country ON visa_price_rules(country, currency, active)")
 
         db.execSQL("""
             CREATE TABLE settings(
@@ -450,12 +482,76 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         if (oldVersion < 8) {
             db.execSQL("ALTER TABLE passengers ADD COLUMN rating INTEGER NOT NULL DEFAULT 0")
         }
+        if (oldVersion < 9) {
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS visa_price_rules(
+                    id TEXT PRIMARY KEY,
+                    country TEXT NOT NULL,
+                    visa_type TEXT,
+                    price REAL,
+                    currency TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    note TEXT,
+                    updated_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_visa_price_country ON visa_price_rules(country, currency, active)")
+            seedVisaCountries(db)
+            putSettingIfMissing(db, "visa_usd_tolerance", "0.01")
+            putSettingIfMissing(db, "visa_iqd_tolerance", "1000")
+
+            db.rawQuery("SELECT id,phone FROM passengers WHERE phone IS NOT NULL AND phone<>''", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val id = cursor.getString(0)
+                    val oldPhone = cursor.getString(1)
+                    val normalized = normalizeIraqPhoneOrNull(oldPhone)
+                    if (normalized != null && normalized != oldPhone) {
+                        db.update("passengers", ContentValues().apply { put("phone", normalized) }, "id=?", arrayOf(id))
+                    }
+                }
+            }
+            db.rawQuery("SELECT id,phone FROM responsible_contacts WHERE phone IS NOT NULL AND phone<>''", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val id = cursor.getString(0)
+                    val oldPhone = cursor.getString(1)
+                    val normalized = normalizeIraqPhoneOrNull(oldPhone)
+                    if (normalized != null && normalized != oldPhone) {
+                        db.update("responsible_contacts", ContentValues().apply { put("phone", normalized) }, "id=?", arrayOf(id))
+                    }
+                }
+            }
+            listOf("issuer_whatsapp", "accountant_whatsapp").forEach { key ->
+                val oldValue = db.rawQuery("SELECT value FROM settings WHERE key=?", arrayOf(key)).use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                }
+                normalizeIraqPhoneOrNull(oldValue)?.let { normalized ->
+                    db.insertWithOnConflict("settings", null, ContentValues().apply {
+                        put("key", key)
+                        put("value", normalized)
+                    }, SQLiteDatabase.CONFLICT_REPLACE)
+                }
+            }
+            db.rawQuery("SELECT id,value FROM passenger_aliases WHERE kind='PHONE'", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val id = cursor.getString(0)
+                    val oldValue = cursor.getString(1)
+                    normalizeIraqPhoneOrNull(oldValue)?.let { normalized ->
+                        db.update("passenger_aliases", ContentValues().apply {
+                            put("value", normalized)
+                            put("normalized_value", normalized)
+                        }, "id=?", arrayOf(id))
+                    }
+                }
+            }
+        }
     }
 
     private fun seedDefaults(db: SQLiteDatabase) {
         putSetting(db, "page_size", "20")
         putSetting(db, "usd_tolerance", "1.0")
         putSetting(db, "iqd_tolerance", "1000")
+        putSetting(db, "visa_usd_tolerance", "0.01")
+        putSetting(db, "visa_iqd_tolerance", "1000")
         putSetting(db, "issuer_whatsapp", "")
         putSetting(db, "issuer_contact_type", "GROUP")
         putSetting(db, "issuer_group_url", "https://chat.whatsapp.com/CSubCIjAE5Y0qnzWOI5Z6K?s=cl&p=a&mlu=4&ilr=4")
@@ -480,6 +576,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         putSetting(db, "color_payment", "#56CCF2")
         putSetting(db, "color_unknown", "#6A4C93")
         seedAirlines(db)
+        seedVisaCountries(db)
 
         val defaults = listOf(
             CommissionRule(UUID.randomUUID().toString(), "Iraqi Airways", RuleKind.PRIVATE_MANUAL, 0.0, note = "النسبة على Base Fare وتتغير حسب القاعدة/الفترة؛ تذاكر كشف IQD تُصنف عراقية تلقائيًا"),
@@ -544,6 +641,26 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         }
     }
 
+    private fun seedVisaCountries(db: SQLiteDatabase) {
+        val now = System.currentTimeMillis()
+        listOf(
+            "UAE" to "الإمارات",
+            "JORDAN" to "الأردن",
+            "EGYPT" to "مصر"
+        ).forEach { (country, label) ->
+            db.insertWithOnConflict("visa_price_rules", null, ContentValues().apply {
+                put("id", "VISA-" + country + "-DEFAULT-USD")
+                put("country", country)
+                putNull("visa_type")
+                putNull("price")
+                put("currency", Currency.USD.name)
+                put("active", 1)
+                put("note", label + " • أدخل السعر الحالي يدويًا")
+                put("updated_at", now)
+            }, SQLiteDatabase.CONFLICT_IGNORE)
+        }
+    }
+
     private fun insertRule(db: SQLiteDatabase, rule: CommissionRule) {
         db.insert("commission_rules", null, ContentValues().apply {
             put("id", rule.id); put("airline", rule.airline); put("kind", rule.kind.name)
@@ -552,6 +669,243 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             put("learned", if (rule.learned) 1 else 0); put("active", if (rule.active) 1 else 0)
             put("note", rule.note); put("updated_at", rule.updatedAt)
         })
+    }
+
+    fun visaPriceRules(): List<VisaPriceRule> {
+        val out = mutableListOf<VisaPriceRule>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM visa_price_rules ORDER BY active DESC, country, COALESCE(visa_type,''), currency",
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += VisaPriceRule(
+                    id = cursor.s("id"),
+                    country = cursor.s("country"),
+                    visaType = cursor.sn("visa_type"),
+                    price = cursor.dn("price"),
+                    currency = Currency.valueOf(cursor.s("currency")),
+                    active = cursor.i("active") == 1,
+                    note = cursor.sn("note"),
+                    updatedAt = cursor.l("updated_at")
+                )
+            }
+        }
+        return out
+    }
+
+    fun saveVisaPriceRule(rule: VisaPriceRule): VisaPriceRule {
+        val country = canonicalVisaCountry(rule.country)
+        val cleanType = rule.visaType?.trim()?.takeIf { it.isNotBlank() }
+        val saved = rule.copy(
+            id = rule.id.ifBlank { UUID.randomUUID().toString() },
+            country = country,
+            visaType = cleanType,
+            price = rule.price?.takeIf { it >= 0.0 },
+            updatedAt = System.currentTimeMillis()
+        )
+        writableDatabase.insertWithOnConflict("visa_price_rules", null, ContentValues().apply {
+            put("id", saved.id)
+            put("country", saved.country)
+            put("visa_type", saved.visaType)
+            put("price", saved.price)
+            put("currency", saved.currency.name)
+            put("active", if (saved.active) 1 else 0)
+            put("note", saved.note)
+            put("updated_at", saved.updatedAt)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+        audit("visa_price", saved.id, "save", saved.country + "|" + (saved.visaType ?: "DEFAULT") + "|" + (saved.price?.toString() ?: "EMPTY"))
+        return saved
+    }
+
+    fun visaPriceFor(country: String?, visaType: String?, currency: Currency): VisaPriceRule? {
+        val canonical = country?.takeIf { it.isNotBlank() }?.let(::canonicalVisaCountry) ?: return null
+        val type = visaType?.trim().orEmpty()
+        val rules = visaPriceRules().filter { it.active && it.country.equals(canonical, true) && it.currency == currency && it.price != null }
+        return rules.firstOrNull { !it.visaType.isNullOrBlank() && type.contains(it.visaType!!, true) }
+            ?: rules.firstOrNull { it.visaType.isNullOrBlank() }
+    }
+
+    fun canonicalVisaCountry(value: String): String {
+        val p = value.trim().uppercase()
+        return when {
+            "UAE" in p || "EMIRAT" in p || "الامارات" in value || "الإمارات" in value -> "UAE"
+            "JORDAN" in p || "الاردن" in value || "الأردن" in value -> "JORDAN"
+            "EGYPT" in p || "مصر" in value -> "EGYPT"
+            "SAUDI" in p || "السعود" in value -> "SAUDI"
+            else -> value.trim().uppercase()
+        }
+    }
+
+    fun latestLocalBackupName(): String? =
+        java.io.File(context.filesDir, "backups")
+            .listFiles()
+            ?.filter { it.isFile && it.extension.equals("db", true) }
+            ?.maxByOrNull { it.lastModified() }
+            ?.name
+
+    fun exportDatabase(output: java.io.OutputStream): Long {
+        try {
+            writableDatabase.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
+                if (cursor.moveToFirst()) { /* checkpoint */ }
+            }
+        } catch (_: Exception) { }
+        val source = context.getDatabasePath("eslam_check.db")
+        java.io.FileInputStream(source).use { input ->
+            input.copyTo(output)
+        }
+        output.flush()
+        return source.length()
+    }
+
+    fun importDatabase(input: java.io.InputStream): Boolean {
+        val target = context.getDatabasePath("eslam_check.db")
+        val backupDir = java.io.File(context.filesDir, "backups").apply { mkdirs() }
+        val safety = java.io.File(backupDir, "before-import-" + System.currentTimeMillis() + ".db")
+        try {
+            try {
+                writableDatabase.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
+                    if (cursor.moveToFirst()) { /* checkpoint */ }
+                }
+            } catch (_: Exception) { }
+            close()
+            if (target.exists()) target.copyTo(safety, overwrite = true)
+            java.io.File(target.path + "-wal").delete()
+            java.io.File(target.path + "-shm").delete()
+            java.io.File(target.path + "-journal").delete()
+            target.parentFile?.mkdirs()
+            java.io.FileOutputStream(target, false).use { output -> input.copyTo(output) }
+            readableDatabase
+            return true
+        } catch (_: Exception) {
+            try {
+                close()
+                if (safety.exists()) safety.copyTo(target, overwrite = true)
+                java.io.File(target.path + "-wal").delete()
+                java.io.File(target.path + "-shm").delete()
+                readableDatabase
+            } catch (_: Exception) { }
+            return false
+        }
+    }
+
+    fun dataHealthStats(): DataHealthStats {
+        fun count(sql: String): Int = readableDatabase.rawQuery(sql, null).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
+        return DataHealthStats(
+            transactions = count("SELECT COUNT(*) FROM transactions"),
+            passengers = count("SELECT COUNT(*) FROM passengers WHERE merged_into_id IS NULL"),
+            responsiblePassengers = count("SELECT COUNT(*) FROM passengers WHERE merged_into_id IS NULL AND is_responsible=1"),
+            aliases = count("SELECT COUNT(*) FROM passenger_aliases"),
+            deletedLinks = count("SELECT COUNT(*) FROM deleted_tx_passengers"),
+            visaPriceRules = count("SELECT COUNT(*) FROM visa_price_rules WHERE active=1"),
+            databaseVersion = readableDatabase.version,
+            databaseBytes = context.getDatabasePath("eslam_check.db").length()
+        )
+    }
+
+    fun dataConflicts(limit: Int = 100): List<DataConflict> {
+        val out = mutableListOf<DataConflict>()
+
+        readableDatabase.rawQuery(
+            """
+                SELECT passport, GROUP_CONCAT(name, ' • '), COUNT(*)
+                FROM passengers
+                WHERE merged_into_id IS NULL AND passport IS NOT NULL AND TRIM(passport)<>''
+                GROUP BY UPPER(REPLACE(passport,' ',''))
+                HAVING COUNT(*)>1
+                LIMIT 20
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += DataConflict("PASSPORT", "جواز مكرر: " + cursor.getString(0), cursor.getString(1))
+            }
+        }
+
+        readableDatabase.rawQuery(
+            """
+                SELECT phone, GROUP_CONCAT(name, ' • '), COUNT(*)
+                FROM passengers
+                WHERE merged_into_id IS NULL AND phone IS NOT NULL AND TRIM(phone)<>''
+                GROUP BY phone
+                HAVING COUNT(*)>1
+                LIMIT 20
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += DataConflict("PHONE", "هاتف مكرر: " + cursor.getString(0), cursor.getString(1))
+            }
+        }
+
+        readableDatabase.rawQuery(
+            """
+                SELECT a.kind, a.normalized_value, GROUP_CONCAT(DISTINCT COALESCE(NULLIF(p.merged_into_id,''),p.id))
+                FROM passenger_aliases a
+                JOIN passengers p ON p.id=a.passenger_id
+                GROUP BY a.kind, a.normalized_value
+                HAVING COUNT(DISTINCT COALESCE(NULLIF(p.merged_into_id,''),p.id))>1
+                LIMIT 20
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += DataConflict(
+                    "ALIAS",
+                    "ارتباط هوية مكرر: " + cursor.getString(0) + " / " + cursor.getString(1),
+                    "مرتبط بأكثر من ملف شخص"
+                )
+            }
+        }
+
+        readableDatabase.rawQuery(
+            """
+                SELECT t.id, COALESCE(t.operation_no,t.pnr,t.id), COUNT(DISTINCT
+                    CASE
+                        WHEN p.responsible_id IS NOT NULL THEN p.responsible_id
+                        WHEN p.is_responsible=1 THEN COALESCE(NULLIF(p.merged_into_id,''),p.id)
+                        ELSE NULL
+                    END
+                ) AS responsible_count
+                FROM transactions t
+                JOIN tx_passengers tp ON tp.tx_id=t.id
+                JOIN passengers p ON p.id=tp.passenger_id
+                GROUP BY t.id
+                HAVING responsible_count>1
+                LIMIT 20
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += DataConflict(
+                    "RESPONSIBLE",
+                    "تعارض مسؤولين في عملية " + cursor.getString(1),
+                    "يوجد أكثر من مسؤول داخل نفس مجموعة المسافرين"
+                )
+            }
+        }
+
+        readableDatabase.rawQuery(
+            """
+                SELECT t.id, COALESCE(t.operation_no,t.pnr,t.id), t.type
+                FROM transactions t
+                LEFT JOIN tx_passengers tp ON tp.tx_id=t.id
+                WHERE tp.tx_id IS NULL AND t.type<>'PAYMENT'
+                LIMIT 20
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += DataConflict(
+                    "NO_PASSENGERS",
+                    "عملية بلا مسافرين: " + cursor.getString(1),
+                    cursor.getString(2)
+                )
+            }
+        }
+
+        return out.take(limit)
     }
 
     fun setting(key: String, default: String = ""): String {
@@ -810,6 +1164,36 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         return out
     }
 
+    fun passengerActivityStats(): Map<String, PassengerActivityStats> {
+        val out = linkedMapOf<String, PassengerActivityStats>()
+        readableDatabase.rawQuery(
+            """
+                SELECT COALESCE(NULLIF(p.merged_into_id,''), p.id) AS root_id,
+                       COUNT(DISTINCT t.id) AS total_count,
+                       COUNT(DISTINCT CASE WHEN t.type='TICKET' THEN t.id END) AS ticket_count,
+                       COUNT(DISTINCT CASE WHEN t.type='VISA' THEN t.id END) AS visa_count,
+                       MAX(t.imported_at) AS last_activity
+                FROM tx_passengers tp
+                JOIN passengers p ON p.id=tp.passenger_id
+                JOIN transactions t ON t.id=tp.tx_id
+                GROUP BY COALESCE(NULLIF(p.merged_into_id,''), p.id)
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(0)
+                out[id] = PassengerActivityStats(
+                    passengerId = id,
+                    total = cursor.getInt(1),
+                    tickets = cursor.getInt(2),
+                    visas = cursor.getInt(3),
+                    lastActivityAt = if (cursor.isNull(4)) null else cursor.getLong(4)
+                )
+            }
+        }
+        return out
+    }
+
     fun allPassengers(limit: Int = 500): List<Passenger> {
         val out = mutableListOf<Passenger>()
         readableDatabase.rawQuery(
@@ -1029,7 +1413,13 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     fun deletedPassengerLinks(limit: Int = 200): List<DeletedPassengerLink> {
         val out = mutableListOf<DeletedPassengerLink>()
         readableDatabase.rawQuery(
-            "SELECT * FROM deleted_tx_passengers ORDER BY deleted_at DESC LIMIT ?",
+            """
+                SELECT d.*, t.type AS tx_type, t.transaction_date AS tx_date
+                FROM deleted_tx_passengers d
+                LEFT JOIN transactions t ON t.id=d.tx_id
+                ORDER BY d.deleted_at DESC
+                LIMIT ?
+            """.trimIndent(),
             arrayOf(limit.toString())
         ).use { c ->
             while (c.moveToNext()) {
@@ -1048,6 +1438,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                     documentNo = c.sn("document_no"),
                     product = c.sn("product"),
                     flags = c.sn("flags"),
+                    txType = c.sn("tx_type")?.let { runCatching { TxType.valueOf(it) }.getOrNull() },
+                    transactionDate = c.sn("tx_date"),
                     deletedAt = c.l("deleted_at")
                 )
             }
@@ -1103,6 +1495,38 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         }
         audit("transaction", tx.id, "restore_passenger_link", passenger.name + "|" + (tx.operationNo ?: tx.id))
         return true
+    }
+
+    fun restoreDeletedPassengerLinksForOperation(id: String): Int {
+        val scope = readableDatabase.rawQuery(
+            "SELECT tx_id,currency,operation_no FROM deleted_tx_passengers WHERE id=? LIMIT 1",
+            arrayOf(id)
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null
+            else Triple(
+                cursor.getString(0),
+                cursor.getString(1),
+                if (cursor.isNull(2)) null else cursor.getString(2)
+            )
+        } ?: return 0
+
+        val ids = mutableListOf<String>()
+        if (!scope.third.isNullOrBlank()) {
+            readableDatabase.rawQuery(
+                "SELECT id FROM deleted_tx_passengers WHERE currency=? AND operation_no=?",
+                arrayOf(scope.second, scope.third)
+            ).use { cursor ->
+                while (cursor.moveToNext()) ids += cursor.getString(0)
+            }
+        } else {
+            readableDatabase.rawQuery(
+                "SELECT id FROM deleted_tx_passengers WHERE tx_id=?",
+                arrayOf(scope.first)
+            ).use { cursor ->
+                while (cursor.moveToNext()) ids += cursor.getString(0)
+            }
+        }
+        return ids.count { restoreDeletedPassengerLink(it) }
     }
 
     fun markReview(id: String, state: ReviewState) {
@@ -1244,7 +1668,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     )
 
     private fun normalizeAliasValue(kind: String, value: String): String = when (kind.uppercase()) {
-        "PHONE" -> value.filter(Char::isDigit)
+        "PHONE" -> normalizeIraqPhoneOrNull(value) ?: value.filter(Char::isDigit)
         "PASSPORT" -> value.uppercase().replace(Regex("[^A-Z0-9]"), "")
         else -> normalize(value)
     }
@@ -1562,7 +1986,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             put("name", person.name.trim())
             put("normalized_name", normalize(person.name))
             put("passport", person.passport)
-            put("phone", person.phone)
+            put("phone", normalizeIraqPhoneForStorage(person.phone))
             put("responsible_id", responsibleId)
             put("responsible_relation", person.responsibleRelation)
             put("is_responsible", if (person.isResponsible) 1 else 0)
@@ -1571,7 +1995,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
 
         addAlias(writableDatabase, canonicalId, "NAME", person.name, canonicalId)
         addAlias(writableDatabase, canonicalId, "PASSPORT", person.passport, canonicalId)
-        addAlias(writableDatabase, canonicalId, "PHONE", person.phone, canonicalId)
+        addAlias(writableDatabase, canonicalId, "PHONE", normalizeIraqPhoneForStorage(person.phone), canonicalId)
         audit("passenger", canonicalId, "edit", person.name)
     }
 
@@ -1680,13 +2104,57 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             "SELECT * FROM airlines WHERE LOWER(name)=LOWER(?) OR code=? LIMIT 1",
             arrayOf(cleanName, cleanCode)
         ).use { c -> if (c.moveToFirst()) AirlineInfo(c.s("id"), c.s("code"), c.s("name"), c.i("active")==1, c.l("updated_at")) else null }
-        if (existing != null) return existing
+        if (existing != null) {
+            if (!existing.active) {
+                writableDatabase.update("airlines", ContentValues().apply {
+                    put("active", 1)
+                    put("updated_at", System.currentTimeMillis())
+                }, "id=?", arrayOf(existing.id))
+                audit("airline", existing.id, "restore", existing.name)
+                return existing.copy(active = true, updatedAt = System.currentTimeMillis())
+            }
+            return existing
+        }
         val item = AirlineInfo("AIR-" + UUID.randomUUID().toString(), cleanCode, cleanName)
         writableDatabase.insert("airlines", null, ContentValues().apply {
             put("id", item.id); put("code", item.code); put("name", item.name); put("active", 1); put("updated_at", item.updatedAt)
         })
         audit("airline", item.id, "create", "${item.code}|${item.name}")
         return item
+    }
+
+    fun deleteAirline(id: String): Boolean {
+        val airline = readableDatabase.rawQuery(
+            "SELECT * FROM airlines WHERE id=? LIMIT 1",
+            arrayOf(id)
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null else AirlineInfo(
+                id = cursor.s("id"),
+                code = cursor.s("code"),
+                name = cursor.s("name"),
+                active = cursor.i("active") == 1,
+                updatedAt = cursor.l("updated_at")
+            )
+        } ?: return false
+
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.update(
+                "airlines",
+                ContentValues().apply {
+                    put("active", 0)
+                    put("updated_at", System.currentTimeMillis())
+                },
+                "id=?",
+                arrayOf(id)
+            )
+            writableDatabase.delete("airline_prefixes", "LOWER(airline)=LOWER(?)", arrayOf(airline.name))
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        audit("airline", id, "delete", airline.name)
+        return true
     }
 
     private fun resolveAirlineToken(value: String?): String? {
@@ -1727,6 +2195,54 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         if (responsibleIds.size == 1) return passengerById(responsibleIds.first())
         val direct = pax.filter { it.isResponsible }
         return direct.singleOrNull()
+    }
+
+    fun passengerNetwork(passengerId: String): List<PassengerNetworkNode> {
+        val root = resolveCanonicalPassengerId(passengerId)
+        val rootPassenger = passengerById(root) ?: return emptyList()
+        val out = mutableListOf(PassengerNetworkNode(rootPassenger))
+        val seen = linkedSetOf(root)
+        val queue = ArrayDeque<String>()
+        queue.add(root)
+
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            val currentPassenger = passengerById(current) ?: continue
+            val groupIds = mergedGroupIds(current)
+            if (groupIds.isEmpty()) continue
+            val groupPlaceholders = groupIds.joinToString(",") { "?" }
+
+            val txs = mutableListOf<Transaction>()
+            readableDatabase.rawQuery(
+                """
+                    SELECT DISTINCT t.*
+                    FROM transactions t
+                    JOIN tx_passengers tp ON tp.tx_id=t.id
+                    WHERE tp.passenger_id IN ($groupPlaceholders)
+                    ORDER BY t.imported_at DESC
+                """.trimIndent(),
+                groupIds.toTypedArray()
+            ).use { cursor ->
+                while (cursor.moveToNext()) txs += cursor.toTransaction()
+            }
+
+            txs.forEach { tx ->
+                passengersFor(tx.id).forEach { p ->
+                    val canonical = resolveCanonicalPassengerId(p.id)
+                    if (seen.add(canonical)) {
+                        val passenger = passengerById(canonical) ?: p
+                        out += PassengerNetworkNode(
+                            passenger = passenger,
+                            viaPassengerName = currentPassenger.name,
+                            operationNo = tx.operationNo,
+                            pnr = tx.pnr
+                        )
+                        queue.add(canonical)
+                    }
+                }
+            }
+        }
+        return out
     }
 
     private fun connectedPassengerIds(seedIds: Collection<String>): LinkedHashSet<String> {
@@ -2051,14 +2567,9 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         }
 
     private fun visaCountryFromProduct(product: String?): String? {
-        val p = product.orEmpty().uppercase()
-        return when {
-            "UAE" in p || "الامارات" in p || "الإمارات" in p -> "UAE"
-            "JORDAN" in p || "الاردن" in p || "الأردن" in p -> "JORDAN"
-            "EGYPT" in p || "مصر" in p -> "EGYPT"
-            "SAUDI" in p || "السعود" in p -> "SAUDI"
-            else -> null
-        }
+        val raw = product.orEmpty()
+        val canonical = canonicalVisaCountry(raw)
+        return canonical.takeIf { it in setOf("UAE", "JORDAN", "EGYPT", "SAUDI") }
     }
 
     private fun Cursor.s(col: String) = getString(getColumnIndexOrThrow(col))

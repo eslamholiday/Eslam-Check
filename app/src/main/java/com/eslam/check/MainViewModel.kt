@@ -164,6 +164,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun passengersFor(id: String): List<Passenger> = db.passengersFor(id)
     fun txPassengerDetails(id: String): List<TxPassengerDetail> = db.txPassengerDetails(id)
     fun passengerSuggestions(query: String): List<Passenger> = db.passengerSuggestions(query)
+    fun passengerActivityStats(): Map<String, PassengerActivityStats> = db.passengerActivityStats()
     fun passengerById(id: String): Passenger? = db.passengerById(id)
     fun dependentsOf(id: String): List<Passenger> = db.dependentsOf(id)
     fun customerPhoneForTransaction(id: String): String? = db.customerPhoneForTransaction(id)
@@ -182,9 +183,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun responsibilityConflictsForPassenger(passengerId: String, responsibleId: String): List<Passenger> =
         db.responsibilityConflictsForPassenger(passengerId, responsibleId)
     fun mergedPassengers(id: String): List<Passenger> = db.mergedPassengers(id)
+    fun passengerNetwork(id: String): List<PassengerNetworkNode> = db.passengerNetwork(id)
     fun auditEvents(entityType: String, entityId: String): List<AuditEvent> = db.auditEvents(entityType, entityId)
     fun airlineNames(): List<String> = db.airlineNames()
     fun ruleForTransaction(tx: Transaction): CommissionRule? = db.ruleForTransaction(tx)
+    fun visaPriceRules(): List<VisaPriceRule> = db.visaPriceRules()
+    fun visaPriceFor(country: String?, visaType: String?, currency: Currency): VisaPriceRule? =
+        db.visaPriceFor(country, visaType, currency)
+    fun dataHealthStats(): DataHealthStats = db.dataHealthStats()
+    fun dataConflicts(): List<DataConflict> = db.dataConflicts()
+    fun latestLocalBackupName(): String? = db.latestLocalBackupName()
 
     fun updateTransaction(tx: Transaction) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -263,6 +271,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             db.saveAirline(code, name)
             _airlines.value = db.airlines()
             _message.value = "تمت إضافة شركة الطيران"
+        }
+    }
+
+    fun deleteAirline(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val deleted = db.deleteAirline(id)
+            _airlines.value = db.airlines()
+            _message.value = if (deleted) "تم حذف شركة الطيران من القائمة" else "تعذر حذف شركة الطيران"
         }
     }
 
@@ -360,6 +376,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteTransactionAttachmentImmediate(id: String) = db.deleteTransactionAttachment(id)
 
     fun restoreDeletedPassengerLinkImmediate(id: String): Boolean = db.restoreDeletedPassengerLink(id)
+    fun restoreDeletedPassengerLinksForOperationImmediate(id: String): Int =
+        db.restoreDeletedPassengerLinksForOperation(id)
 
     fun deletePassengerAliasImmediate(id: String): Boolean = db.deletePassengerAlias(id)
 
@@ -403,9 +421,57 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun exportBackup(uri: Uri) {
+        viewModelScope.launch {
+            _busy.value = true
+            try {
+                val bytes = withContext(Dispatchers.IO) {
+                    val resolver = getApplication<Application>().contentResolver
+                    resolver.openOutputStream(uri, "w")?.use { output ->
+                        db.exportDatabase(output)
+                    } ?: error("تعذر إنشاء ملف النسخة")
+                }
+                _message.value = "تم حفظ النسخة الاحتياطية (" + bytes + " بايت)"
+            } catch (e: Exception) {
+                _message.value = "فشل حفظ النسخة: " + (e.message ?: "خطأ غير معروف")
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
+    fun importBackup(uri: Uri) {
+        viewModelScope.launch {
+            _busy.value = true
+            try {
+                val ok = withContext(Dispatchers.IO) {
+                    val resolver = getApplication<Application>().contentResolver
+                    resolver.openInputStream(uri)?.use { input -> db.importDatabase(input) } ?: false
+                }
+                _message.value = if (ok) "تمت استعادة النسخة الاحتياطية" else "تعذر استعادة النسخة؛ أعيدت قاعدة البيانات السابقة"
+                if (ok) refresh()
+            } catch (e: Exception) {
+                _message.value = "فشل الاستعادة: " + (e.message ?: "خطأ غير معروف")
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
+    fun saveVisaPriceRule(rule: VisaPriceRule) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.saveVisaPriceRule(rule)
+            _message.value = "تم حفظ سعر الفيزا الافتراضي"
+            _settingsRevision.value = _settingsRevision.value + 1
+        }
+    }
+
     fun setting(key: String, default: String = "") = db.setting(key, default)
     fun setSetting(key: String, value: String) {
-        db.setSetting(key, value)
+        val stored = if (key == "issuer_whatsapp" || key == "accountant_whatsapp") {
+            normalizeIraqPhoneForStorage(value).orEmpty()
+        } else value
+        db.setSetting(key, stored)
         _settingsRevision.value = _settingsRevision.value + 1
     }
 }
