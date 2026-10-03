@@ -974,6 +974,36 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         return out
     }
 
+    fun passengerActivityStats(): Map<String, PassengerActivityStats> {
+        val out = linkedMapOf<String, PassengerActivityStats>()
+        readableDatabase.rawQuery(
+            """
+                SELECT COALESCE(NULLIF(p.merged_into_id,''), p.id) AS root_id,
+                       COUNT(DISTINCT t.id) AS total_count,
+                       COUNT(DISTINCT CASE WHEN t.type='TICKET' THEN t.id END) AS ticket_count,
+                       COUNT(DISTINCT CASE WHEN t.type='VISA' THEN t.id END) AS visa_count,
+                       MAX(t.imported_at) AS last_activity
+                FROM tx_passengers tp
+                JOIN passengers p ON p.id=tp.passenger_id
+                JOIN transactions t ON t.id=tp.tx_id
+                GROUP BY COALESCE(NULLIF(p.merged_into_id,''), p.id)
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(0)
+                out[id] = PassengerActivityStats(
+                    passengerId = id,
+                    total = cursor.getInt(1),
+                    tickets = cursor.getInt(2),
+                    visas = cursor.getInt(3),
+                    lastActivityAt = if (cursor.isNull(4)) null else cursor.getLong(4)
+                )
+            }
+        }
+        return out
+    }
+
     fun allPassengers(limit: Int = 500): List<Passenger> {
         val out = mutableListOf<Passenger>()
         readableDatabase.rawQuery(
