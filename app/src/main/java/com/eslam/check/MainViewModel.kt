@@ -199,7 +199,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun saveAndReview(tx: Transaction, onComplete: (Boolean) -> Unit) {
         viewModelScope.launch {
-            val success = try {
+            val result = try {
                 withContext(Dispatchers.IO) {
                     val old = db.transaction(tx.id)
                     val reviewed = db.saveAndMarkReviewed(tx)
@@ -209,18 +209,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (old?.airline != reviewed.airline) {
                         db.setAirlineForTransaction(reviewed.id, reviewed.airline, learnPrefix = true)
                     }
-                    _transactions.value = db.transactions(limit = 1000)
-                    _passengers.value = db.allPassengers(500)
-                    _stats.value = db.dashboardStats()
-                    _rules.value = db.rules()
-                    _airlines.value = db.airlines()
-                    true
+                    reviewed to db.dashboardStats()
                 }
             } catch (e: Exception) {
                 _message.value = "تعذر تثبيت المراجعة: " + (e.message ?: "خطأ غير معروف")
-                false
+                null
             }
-            onComplete(success)
+
+            if (result != null) {
+                val reviewed = result.first
+                _transactions.value = _transactions.value.map { current ->
+                    if (current.id == reviewed.id) reviewed else current
+                }
+                _stats.value = result.second
+            }
+            onComplete(result != null)
         }
     }
 
