@@ -135,6 +135,14 @@ data class DeletedPassengerLink(
     val deletedAt: Long = System.currentTimeMillis()
 )
 
+data class PassengerActivityStats(
+    val passengerId: String,
+    val total: Int = 0,
+    val tickets: Int = 0,
+    val visas: Int = 0,
+    val lastActivityAt: Long? = null
+)
+
 data class VisaPriceRule(
     val id: String,
     val country: String,
