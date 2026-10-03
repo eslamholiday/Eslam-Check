@@ -1012,7 +1012,7 @@ private fun PassengerDetailDialog(
                         val number = if (numberIndex >= 0) c.getString(numberIndex) else null
                         edit = edit.copy(
                             name = name?.takeIf { it.isNotBlank() } ?: edit.name,
-                            phone = number?.takeIf { it.isNotBlank() } ?: edit.phone
+                            phone = number?.takeIf { it.isNotBlank() }?.let(::normalizeIraqPhoneForStorage) ?: edit.phone
                         )
                     }
                 }
@@ -1085,9 +1085,20 @@ private fun PassengerDetailDialog(
                     }
 
                     item {
+                        val normalizedPhone = normalizeIraqPhoneOrNull(edit.phone)
+                        val phoneInvalid = !edit.phone.isNullOrBlank() && normalizedPhone == null
                         OutlinedTextField(
-                            edit.phone.orEmpty(), { edit = edit.copy(phone = it) }, Modifier.fillMaxWidth(),
+                            edit.phone.orEmpty(),
+                            { edit = edit.copy(phone = it) },
+                            Modifier.fillMaxWidth(),
                             label = { Text("الهاتف / واتساب") },
+                            isError = phoneInvalid,
+                            supportingText = {
+                                when {
+                                    phoneInvalid -> Text("رقم عراقي غير صالح. الصيغة المعتمدة: 07xxxxxxxxx")
+                                    normalizedPhone != null -> Text("سيُحفظ: " + normalizedPhone)
+                                }
+                            },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                             trailingIcon = {
                                 IconButton(onClick = {
@@ -1109,10 +1120,11 @@ private fun PassengerDetailDialog(
                             }
                             Button(
                                 modifier = Modifier.weight(1f),
-                                enabled = edit.phone.orEmpty().filter(Char::isDigit).isNotBlank(),
+                                enabled = iraqPhoneForWhatsApp(edit.phone) != null,
                                 onClick = {
-                                    val phone = edit.phone.orEmpty().filter(Char::isDigit)
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone)))
+                                    iraqPhoneForWhatsApp(edit.phone)?.let { phone ->
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone)))
+                                    }
                                 }
                             ) {
                                 Icon(Icons.Rounded.Chat, null)
@@ -1318,9 +1330,10 @@ private fun PassengerDetailDialog(
                 Button(
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
-                        vm.updatePassenger(edit)
-                        if (edit.responsibleId != passenger.responsibleId || edit.responsibleRelation != passenger.responsibleRelation) {
-                            vm.assignResponsible(edit.id, edit.responsibleId, edit.responsibleRelation, forceProfileResponsibility)
+                        val savedEdit = edit.copy(phone = normalizeIraqPhoneForStorage(edit.phone))
+                        vm.updatePassenger(savedEdit)
+                        if (savedEdit.responsibleId != passenger.responsibleId || savedEdit.responsibleRelation != passenger.responsibleRelation) {
+                            vm.assignResponsible(savedEdit.id, savedEdit.responsibleId, savedEdit.responsibleRelation, forceProfileResponsibility)
                         }
                         onDismiss()
                     }
@@ -2131,8 +2144,7 @@ private fun WhatsAppSettings(vm: MainViewModel, onBack: () -> Unit) {
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
             }
         } else {
-            val phone = issuerPhone.filter(Char::isDigit)
-            if (phone.isNotBlank()) {
+            iraqPhoneForWhatsApp(issuerPhone)?.let { phone ->
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone")))
             }
         }
@@ -2183,8 +2195,18 @@ private fun WhatsAppSettings(vm: MainViewModel, onBack: () -> Unit) {
                             value = issuerPhone,
                             onValueChange = { issuerPhone = it },
                             modifier = Modifier.fillMaxWidth(),
-                            label = { Text("رقم مع رمز الدولة") },
-                            supportingText = { Text("أرقام فقط أو بصيغة +964...") },
+                            label = { Text("رقم واتساب") },
+                            isError = issuerPhone.isNotBlank() && normalizeIraqPhoneOrNull(issuerPhone) == null,
+                            supportingText = {
+                                val normalized = normalizeIraqPhoneOrNull(issuerPhone)
+                                Text(
+                                    when {
+                                        issuerPhone.isBlank() -> "الصيغة المعتمدة عند الحفظ: 07xxxxxxxxx"
+                                        normalized != null -> "سيُحفظ: " + normalized
+                                        else -> "رقم عراقي غير صالح"
+                                    }
+                                )
+                            },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
                         )
@@ -2196,6 +2218,7 @@ private fun WhatsAppSettings(vm: MainViewModel, onBack: () -> Unit) {
                             onClick = {
                                 vm.setSetting("issuer_contact_type", contactType)
                                 vm.setSetting("issuer_whatsapp", issuerPhone)
+                                issuerPhone = normalizeIraqPhoneForStorage(issuerPhone).orEmpty()
                                 vm.setSetting("issuer_group_url", issuerGroupUrl.trim())
                             }
                         ) {
@@ -2296,13 +2319,16 @@ private fun PaymentsSettings(vm: MainViewModel, onBack: () -> Unit) {
                             onClick = {
                                 vm.setSetting("accountant_name", name.ifBlank { "المحاسب" })
                                 vm.setSetting("accountant_whatsapp", phone)
+                                phone = normalizeIraqPhoneForStorage(phone).orEmpty()
                             }
                         ) { Text("حفظ") }
                         OutlinedButton(
                             modifier = Modifier.weight(1f),
-                            enabled = phone.filter(Char::isDigit).isNotBlank(),
+                            enabled = iraqPhoneForWhatsApp(phone) != null,
                             onClick = {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone.filter(Char::isDigit))))
+                                iraqPhoneForWhatsApp(phone)?.let { wa ->
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + wa)))
+                                }
                             }
                         ) { Text("اختبار WhatsApp") }
                     }
@@ -3310,8 +3336,8 @@ private fun TransactionDetailDialog(
                                     if (link.startsWith("http")) context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
                                 }
                                 edit.type == TxType.PAYMENT -> {
-                                    val phone = vm.setting("accountant_whatsapp", "").filter(Char::isDigit)
-                                    if (phone.isNotBlank()) {
+                                    val phone = iraqPhoneForWhatsApp(vm.setting("accountant_whatsapp", ""))
+                                    if (!phone.isNullOrBlank()) {
                                         val msg = Uri.encode(
                                             "تسديد #" + edit.operationNo.orEmpty() + " • " +
                                                 formatMoney(edit.amount, edit.currency) + " • " + edit.transactionDate.orEmpty()
@@ -3357,8 +3383,8 @@ private fun TransactionDetailDialog(
                             if (current == null) {
                                 responsiblePicker = true
                             } else {
-                                val phone = current.phone.orEmpty().filter(Char::isDigit)
-                                if (phone.isNotBlank()) {
+                                val phone = iraqPhoneForWhatsApp(current.phone)
+                                if (!phone.isNullOrBlank()) {
                                     val msg = Uri.encode("PNR " + edit.pnr.orEmpty())
                                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone + "?text=" + msg)))
                                 } else {
@@ -3368,7 +3394,7 @@ private fun TransactionDetailDialog(
                         }
                     ) {
                         Icon(
-                            if (responsible?.phone.orEmpty().filter(Char::isDigit).isNotBlank()) Icons.Rounded.Chat else Icons.Rounded.SupervisorAccount,
+                            if (iraqPhoneForWhatsApp(responsible?.phone) != null) Icons.Rounded.Chat else Icons.Rounded.SupervisorAccount,
                             null,
                             modifier = Modifier.size(17.dp)
                         )
@@ -3376,7 +3402,7 @@ private fun TransactionDetailDialog(
                         Text(
                             when {
                                 responsible == null -> "تحديد المسؤول"
-                                responsible.phone.orEmpty().filter(Char::isDigit).isNotBlank() -> responsible.name + " • واتساب"
+                                iraqPhoneForWhatsApp(responsible.phone) != null -> responsible.name + " • واتساب"
                                 else -> "المسؤول: " + responsible.name
                             },
                             maxLines = 2,
@@ -4036,8 +4062,7 @@ private fun openIssuerContact(context: Context, vm: MainViewModel, tx: Transacti
         ).trim()
         if (url.startsWith("http")) context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
     } else {
-        val phone = vm.setting("issuer_whatsapp", "").filter(Char::isDigit)
-        if (phone.isNotBlank()) {
+        iraqPhoneForWhatsApp(vm.setting("issuer_whatsapp", ""))?.let { phone ->
             val message = Uri.encode("PNR " + tx.pnr.orEmpty() + " • عملية " + tx.operationNo.orEmpty())
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone + "?text=" + message)))
         }
