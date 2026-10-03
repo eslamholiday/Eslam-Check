@@ -887,8 +887,12 @@ private fun PassengerDetailDialog(
     var responsiblePicker by remember { mutableStateOf(false) }
     var dependentPicker by remember { mutableStateOf(false) }
     var unmergeTarget by remember { mutableStateOf<Passenger?>(null) }
+    var deleteAliasTarget by remember { mutableStateOf<PassengerAlias?>(null) }
+    var pendingProfileResponsible by remember { mutableStateOf<Passenger?>(null) }
+    var profileResponsibilityConflicts by remember { mutableStateOf<List<Passenger>>(emptyList()) }
+    var forceProfileResponsibility by remember { mutableStateOf(false) }
     var files by remember(passenger.id) { mutableStateOf(vm.passengerFiles(passenger.id)) }
-    val aliases = vm.passengerAliases(passenger.id)
+    var aliases by remember(passenger.id) { mutableStateOf(vm.passengerAliases(passenger.id)) }
     val mergedRecords = vm.mergedPassengers(passenger.id)
     val dependents = vm.dependentsOf(passenger.id)
     val currentResponsible = edit.responsibleId?.let { id -> vm.passengerById(id) }
@@ -1020,22 +1024,40 @@ private fun PassengerDetailDialog(
                                 }
                                 val nameAliases = aliases
                                     .filter { it.kind == "NAME" }
-                                    .map { it.value }
-                                    .filter { !it.equals(edit.name, true) }
-                                    .distinctBy { it.lowercase() }
+                                    .filter { !it.value.equals(edit.name, true) }
+                                    .distinctBy { it.normalizedValue }
                                 if (nameAliases.isEmpty()) {
                                     Text("لا توجد أسماء بديلة بعد", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 } else {
-                                    Row(
-                                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         nameAliases.forEach { alias ->
-                                            AssistChip(
-                                                onClick = { copyToClipboard(context, "Alias", alias) },
-                                                label = { Text(alias) },
-                                                leadingIcon = { Icon(Icons.Rounded.Link, null, modifier = Modifier.size(16.dp)) }
-                                            )
+                                            Surface(
+                                                shape = RoundedCornerShape(12.dp),
+                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                            ) {
+                                                Row(
+                                                    Modifier.fillMaxWidth().padding(start = 10.dp, top = 3.dp, bottom = 3.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Icon(Icons.Rounded.Link, null, modifier = Modifier.size(16.dp))
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text(
+                                                        alias.value,
+                                                        Modifier.weight(1f).clickable { copyToClipboard(context, "Alias", alias.value) }
+                                                    )
+                                                    IconButton(
+                                                        onClick = { deleteAliasTarget = alias },
+                                                        modifier = Modifier.size(34.dp)
+                                                    ) {
+                                                        Icon(
+                                                            Icons.Rounded.Close,
+                                                            "حذف الاسم البديل",
+                                                            tint = MaterialTheme.colorScheme.error,
+                                                            modifier = Modifier.size(17.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1183,7 +1205,7 @@ private fun PassengerDetailDialog(
                     onClick = {
                         vm.updatePassenger(edit)
                         if (edit.responsibleId != passenger.responsibleId || edit.responsibleRelation != passenger.responsibleRelation) {
-                            vm.assignResponsible(edit.id, edit.responsibleId, edit.responsibleRelation)
+                            vm.assignResponsible(edit.id, edit.responsibleId, edit.responsibleRelation, forceProfileResponsibility)
                         }
                         onDismiss()
                     }
@@ -1210,8 +1232,16 @@ private fun PassengerDetailDialog(
                     }
                     items(allPassengers.filter { it.isResponsible && it.id != edit.id }, key = { it.id }) { p ->
                         TextButton(onClick = {
-                            edit = edit.copy(responsibleId = p.id)
-                            responsiblePicker = false
+                            val conflicts = vm.responsibilityConflictsForPassenger(edit.id, p.id)
+                            if (conflicts.isEmpty()) {
+                                edit = edit.copy(responsibleId = p.id)
+                                forceProfileResponsibility = false
+                                responsiblePicker = false
+                            } else {
+                                pendingProfileResponsible = p
+                                profileResponsibilityConflicts = conflicts
+                                responsiblePicker = false
+                            }
                         }) { Text(p.name) }
                     }
                 }
@@ -1228,6 +1258,70 @@ private fun PassengerDetailDialog(
             onConfirm = { ids ->
                 ids.forEach { vm.assignResponsible(it, edit.id) }
                 dependentPicker = false
+            }
+        )
+    }
+
+    deleteAliasTarget?.let { alias ->
+        AlertDialog(
+            onDismissRequest = { deleteAliasTarget = null },
+            title = { Text("حذف الاسم من هوية الشخص") },
+            text = {
+                Text(
+                    "سيتم حذف ارتباط «" + alias.value + "» من الأسماء البديلة فقط. لن تُحذف العمليات ولن يتم فك أي سجل مدمج."
+                )
+            },
+            confirmButton = {
+                Button(
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    onClick = {
+                        if (vm.deletePassengerAliasImmediate(alias.id)) {
+                            aliases = vm.passengerAliases(passenger.id)
+                        }
+                        deleteAliasTarget = null
+                    }
+                ) {
+                    Icon(Icons.Rounded.DeleteOutline, null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("حذف الارتباط")
+                }
+            },
+            dismissButton = { TextButton(onClick = { deleteAliasTarget = null }) { Text("إلغاء") } }
+        )
+    }
+
+    pendingProfileResponsible?.let { selected ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingProfileResponsible = null
+                profileResponsibilityConflicts = emptyList()
+            },
+            title = { Text("يوجد مسؤول مختلف") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("بعض المسافرين المرتبطين بهذه المجموعة لديهم مسؤول آخر:")
+                    profileResponsibilityConflicts.take(8).forEach { conflict ->
+                        Text("• " + conflict.name, fontSize = 13.sp)
+                    }
+                    Text(
+                        "اعتماد «" + selected.name + "» سينقل المجموعة المترابطة إليه.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    edit = edit.copy(responsibleId = selected.id)
+                    forceProfileResponsibility = true
+                    pendingProfileResponsible = null
+                    profileResponsibilityConflicts = emptyList()
+                }) { Text("اعتماد المسؤول الجديد") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingProfileResponsible = null
+                    profileResponsibilityConflicts = emptyList()
+                }) { Text("إلغاء") }
             }
         )
     }
