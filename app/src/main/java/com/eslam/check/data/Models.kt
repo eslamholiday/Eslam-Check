@@ -82,6 +82,33 @@ data class PassengerFile(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+data class TransactionAttachment(
+    val id: String,
+    val txId: String,
+    val uri: String,
+    val mimeType: String? = null,
+    val displayName: String? = null,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+data class DeletedPassengerLink(
+    val id: String,
+    val txId: String,
+    val currency: Currency,
+    val operationNo: String?,
+    val passengerId: String,
+    val passengerName: String,
+    val normalizedName: String,
+    val normalizedPassport: String? = null,
+    val amount: Double? = null,
+    val baseFare: Double? = null,
+    val passengerType: String? = null,
+    val documentNo: String? = null,
+    val product: String? = null,
+    val flags: String? = null,
+    val deletedAt: Long = System.currentTimeMillis()
+)
+
 data class ResponsibleContact(
     val id: String,
     val name: String,
