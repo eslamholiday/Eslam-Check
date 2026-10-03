@@ -307,6 +307,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteTransactionAttachmentImmediate(id: String) = db.deleteTransactionAttachment(id)
 
+    fun restoreDeletedPassengerLinkImmediate(id: String): Boolean = db.restoreDeletedPassengerLink(id)
+
     fun addPassengerFile(passengerId: String, uri: String, mimeType: String?, displayName: String?) {
         viewModelScope.launch(Dispatchers.IO) {
             db.addPassengerFile(passengerId, uri, mimeType, displayName)
