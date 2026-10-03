@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
@@ -29,10 +30,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -79,6 +83,7 @@ fun EslamCheckApp(vm: MainViewModel) {
         var tab by remember { mutableStateOf(MainTab.HOME) }
         var manualOpen by remember { mutableStateOf(false) }
         var detailId by remember { mutableStateOf<String?>(null) }
+        var detailQueue by remember { mutableStateOf<List<String>>(emptyList()) }
         var calculatorOpen by remember { mutableStateOf(false) }
 
         LaunchedEffect(message) {
@@ -116,10 +121,22 @@ fun EslamCheckApp(vm: MainViewModel) {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (tab) {
-                    MainTab.HOME -> DashboardScreen(vm, { tab = MainTab.REVIEW }) { detailId = it }
-                    MainTab.REVIEW -> ReviewScreen(vm) { detailId = it }
-                    MainTab.PASSENGERS -> PassengersScreen(vm) { detailId = it }
-                    MainTab.PAYMENTS -> PaymentsScreen(vm) { detailId = it }
+                    MainTab.HOME -> DashboardScreen(vm, { tab = MainTab.REVIEW }) {
+                        detailQueue = emptyList()
+                        detailId = it
+                    }
+                    MainTab.REVIEW -> ReviewScreen(vm) { id, queue ->
+                        detailQueue = queue
+                        detailId = id
+                    }
+                    MainTab.PASSENGERS -> PassengersScreen(vm) {
+                        detailQueue = emptyList()
+                        detailId = it
+                    }
+                    MainTab.PAYMENTS -> PaymentsScreen(vm) {
+                        detailQueue = emptyList()
+                        detailId = it
+                    }
                     MainTab.MORE -> MoreScreen(vm)
                 }
 
@@ -154,9 +171,13 @@ fun EslamCheckApp(vm: MainViewModel) {
         }
         detailId?.let { id ->
             key(id) {
-                TransactionDetailDialog(vm, id, onDismiss = { detailId = null }) { next ->
-                    detailId = next
-                }
+                TransactionDetailDialog(
+                    vm = vm,
+                    id = id,
+                    navigationIds = detailQueue,
+                    onDismiss = { detailId = null },
+                    onNext = { next -> detailId = next }
+                )
             }
         }
     }
