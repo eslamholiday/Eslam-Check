@@ -1110,6 +1110,13 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         audit("tx_passenger", txId + "/" + resolveCanonicalPassengerId(passengerId), "base_fare", baseFare?.toString())
     }
 
+    fun setPassengerBaseFareForTransaction(txId: String, baseFare: Double?) {
+        writableDatabase.update("tx_passengers", ContentValues().apply {
+            if (baseFare == null) putNull("base_fare") else put("base_fare", baseFare)
+        }, "tx_id=?", arrayOf(txId))
+        audit("transaction", txId, "base_fare_all", baseFare?.toString())
+    }
+
     fun updatePassenger(person: Passenger) {
         val canonicalId = resolveCanonicalPassengerId(person.id)
         val old = passengerRawById(canonicalId) ?: return
