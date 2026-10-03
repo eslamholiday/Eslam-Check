@@ -2574,11 +2574,18 @@ private fun TransactionDetailDialog(
                             item { Text("لا توجد تفاصيل مسافرين في المصدر.", color = Warn) }
                         } else {
                             items(details, key = { it.passenger.id }) { d ->
+                                val rowCommission = commission.rows.firstOrNull { it.passengerId == d.passenger.id }?.expectedCommission
                                 PassengerAuditCard(
-                                    vm = vm,
                                     tx = edit,
                                     detail = d,
-                                    rule = rule,
+                                    commissionForPassenger = rowCommission,
+                                    inferredCommission = commission.inferredFromDiscount,
+                                    onBaseFareCommit = { passengerId, value ->
+                                        val others = details.filter { it.passenger.id != passengerId }
+                                        val applyToAll = value != null && others.isNotEmpty() && others.all { it.baseFare == null }
+                                        if (applyToAll) vm.setPassengerBaseFareForAll(edit.id, value)
+                                        else vm.setPassengerBaseFare(edit.id, passengerId, value)
+                                    },
                                     onOpenPassenger = { selectedPassenger = it }
                                 )
                             }
