@@ -624,8 +624,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         listOf(
             "UAE" to "الإمارات",
             "JORDAN" to "الأردن",
-            "EGYPT" to "مصر",
-            "SAUDI" to "السعودية"
+            "EGYPT" to "مصر"
         ).forEach { (country, label) ->
             db.insertWithOnConflict("visa_price_rules", null, ContentValues().apply {
                 put("id", "VISA-" + country + "-DEFAULT-USD")
