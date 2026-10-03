@@ -757,34 +757,111 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
         return source.length()
     }
 
+    private fun isValidBackupFile(file: java.io.File): Boolean {
+        if (!file.exists() || file.length() < 4096L) return false
+        var probe: SQLiteDatabase? = null
+        return try {
+            probe = SQLiteDatabase.openDatabase(
+                file.absolutePath,
+                null,
+                SQLiteDatabase.OPEN_READONLY
+            )
+
+            val integrityOk = probe.rawQuery("PRAGMA integrity_check(1)", null).use { cursor ->
+                cursor.moveToFirst() && cursor.getString(0).equals("ok", ignoreCase = true)
+            }
+            if (!integrityOk) return false
+
+            val version = probe.version
+            if (version !in 1..9) return false
+
+            val requiredTables = setOf(
+                "transactions",
+                "passengers",
+                "tx_passengers",
+                "settings"
+            )
+            val existingTables = mutableSetOf<String>()
+            probe.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type='table'",
+                null
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    existingTables += cursor.getString(0)
+                }
+            }
+            existingTables.containsAll(requiredTables)
+        } catch (_: Exception) {
+            false
+        } finally {
+            try { probe?.close() } catch (_: Exception) { }
+        }
+    }
+
+    private fun liveDatabaseIntegrityOk(db: SQLiteDatabase): Boolean =
+        try {
+            db.rawQuery("PRAGMA integrity_check(1)", null).use { cursor ->
+                cursor.moveToFirst() && cursor.getString(0).equals("ok", ignoreCase = true)
+            }
+        } catch (_: Exception) {
+            false
+        }
+
     fun importDatabase(input: java.io.InputStream): Boolean {
         val target = context.getDatabasePath("eslam_check.db")
         val backupDir = java.io.File(context.filesDir, "backups").apply { mkdirs() }
         val safety = java.io.File(backupDir, "before-import-" + System.currentTimeMillis() + ".db")
-        try {
+        val staged = java.io.File(context.cacheDir, "eslam-check-import-" + System.currentTimeMillis() + ".db")
+
+        return try {
+            java.io.FileOutputStream(staged, false).use { output ->
+                input.copyTo(output)
+                output.flush()
+            }
+
+            // Never touch the live database until the selected file proves to be
+            // a healthy Eslam Check SQLite database with a supported schema.
+            if (!isValidBackupFile(staged)) return false
+
             try {
                 writableDatabase.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
-                    if (cursor.moveToFirst()) { /* checkpoint */ }
+                    if (cursor.moveToFirst()) { /* force checkpoint */ }
                 }
             } catch (_: Exception) { }
+
             close()
             if (target.exists()) target.copyTo(safety, overwrite = true)
+
             java.io.File(target.path + "-wal").delete()
             java.io.File(target.path + "-shm").delete()
             java.io.File(target.path + "-journal").delete()
             target.parentFile?.mkdirs()
-            java.io.FileOutputStream(target, false).use { output -> input.copyTo(output) }
-            readableDatabase
-            return true
+            staged.copyTo(target, overwrite = true)
+
+            // Opening through SQLiteOpenHelper also runs any required migration
+            // for an older compatible Eslam Check backup.
+            val restored = readableDatabase
+            if (!liveDatabaseIntegrityOk(restored)) {
+                error("قاعدة البيانات المستوردة لم تجتز فحص السلامة")
+            }
+            true
         } catch (_: Exception) {
             try {
                 close()
-                if (safety.exists()) safety.copyTo(target, overwrite = true)
                 java.io.File(target.path + "-wal").delete()
                 java.io.File(target.path + "-shm").delete()
-                readableDatabase
+                java.io.File(target.path + "-journal").delete()
+
+                if (safety.exists()) {
+                    safety.copyTo(target, overwrite = true)
+                }
+
+                val rolledBack = readableDatabase
+                liveDatabaseIntegrityOk(rolledBack)
             } catch (_: Exception) { }
-            return false
+            false
+        } finally {
+            try { staged.delete() } catch (_: Exception) { }
         }
     }
 
