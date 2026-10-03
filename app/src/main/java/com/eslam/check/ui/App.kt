@@ -2946,7 +2946,15 @@ private fun TransactionDetailDialog(
                                         }
                                         else -> {
                                             Text(ruleLabel(rule))
-                                            if (!rule.effectiveFrom.isNullOrBlank()) Text("سارية من " + rule.effectiveFrom, fontSize = 12.sp)
+                                            if (!rule.effectiveFrom.isNullOrBlank()) {
+                                                val dateOk = Regex("""\d{4}-\d{2}-\d{2}""").matches(rule.effectiveFrom.orEmpty())
+                                                Text(
+                                                    if (dateOk) "سارية من " + rule.effectiveFrom
+                                                    else "تاريخ السريان غير مكتمل — صححه من قاعدة العمولة",
+                                                    fontSize = 12.sp,
+                                                    color = if (dateOk) MaterialTheme.colorScheme.onSurfaceVariant else Warn
+                                                )
+                                            }
                                             rule.note?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                                         }
                                     }
@@ -2981,8 +2989,22 @@ private fun TransactionDetailDialog(
                                     )
 
                                     if (!commission.inferredFromDiscount) {
-                                        commission.difference?.let {
-                                            Text("الفرق: " + formatMoney(kotlin.math.abs(it), edit.currency))
+                                        commission.difference?.let { diff ->
+                                            when (rule?.kind) {
+                                                RuleKind.PERCENT_BASE -> {
+                                                    val direction = when {
+                                                        kotlin.math.abs(diff) <= tolerance -> "مطابق"
+                                                        diff < 0 -> "Discount أقل من المتوقع"
+                                                        else -> "Discount أعلى من المتوقع"
+                                                    }
+                                                    Text(
+                                                        "الفرق عن المتوقع: " + formatMoney(kotlin.math.abs(diff), edit.currency) + " • " + direction,
+                                                        color = if (kotlin.math.abs(diff) <= tolerance) Good else Bad,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                }
+                                                else -> Text("الفرق: " + formatMoney(kotlin.math.abs(diff), edit.currency))
+                                            }
                                         }
                                     }
                                     commission.expectedSettlement?.let { Text("التسديد المتوقع: " + formatMoney(it, edit.currency)) }
