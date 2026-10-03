@@ -1767,7 +1767,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
 
     private fun responsibilityConflicts(seedIds: Collection<String>, responsibleId: String): List<Passenger> {
         val chosen = resolveCanonicalPassengerId(responsibleId)
-        return connectedPassengerIds(seedIds)
+        val graphSeeds = seedIds.map(::resolveCanonicalPassengerId) + chosen
+        return connectedPassengerIds(graphSeeds)
             .mapNotNull(::passengerById)
             .filter { passenger ->
                 passenger.id != chosen &&
@@ -1786,8 +1787,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         val conflicts = responsibilityConflicts(seedIds, chosen)
         if (conflicts.isNotEmpty() && !forceConflicts) return conflicts
 
-        val connected = connectedPassengerIds(seedIds)
-        connected += chosen
+        val connected = connectedPassengerIds(seedIds.map(::resolveCanonicalPassengerId) + chosen)
         writableDatabase.beginTransaction()
         try {
             writableDatabase.update(
