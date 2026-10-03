@@ -164,6 +164,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun passengersFor(id: String): List<Passenger> = db.passengersFor(id)
     fun txPassengerDetails(id: String): List<TxPassengerDetail> = db.txPassengerDetails(id)
     fun passengerSuggestions(query: String): List<Passenger> = db.passengerSuggestions(query)
+    fun passengerActivityStats(): Map<String, PassengerActivityStats> = db.passengerActivityStats()
     fun passengerById(id: String): Passenger? = db.passengerById(id)
     fun dependentsOf(id: String): List<Passenger> = db.dependentsOf(id)
     fun customerPhoneForTransaction(id: String): String? = db.customerPhoneForTransaction(id)
