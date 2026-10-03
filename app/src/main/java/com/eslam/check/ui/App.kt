@@ -2440,10 +2440,29 @@ private fun TransactionDetailDialog(
                                 }
                             }
                         }
-                        Text(
-                            labelFor(edit.type) + " • " + edit.currency.name + (edit.operationNo?.let { " • #" + it } ?: ""),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                labelFor(edit.type) + " • " + edit.currency.name,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            edit.operationNo?.let { op ->
+                                Text(
+                                    "#" + op,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.clickable { copyToClipboard(context, "رقم العملية", op) }
+                                )
+                                IconButton(
+                                    onClick = { copyToClipboard(context, "رقم العملية", op) },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(Icons.Rounded.ContentCopy, "نسخ رقم العملية", modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
                         edit.externalId?.let { Text("ID: " + it, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                     IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, "إغلاق") }
