@@ -2949,6 +2949,14 @@ private fun TransactionDetailDialog(
                                             }
                                         }
                                     }
+                                    OutlinedButton(
+                                        onClick = { responsiblePicker = true },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(Icons.Rounded.SupervisorAccount, null)
+                                        Spacer(Modifier.width(5.dp))
+                                        Text(if (responsible == null) "تحديد المسؤول" else "تغيير المسؤول")
+                                    }
                                 }
                             }
                         }
