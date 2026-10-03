@@ -1871,28 +1871,171 @@ private fun MoreScreen(vm: MainViewModel) {
             ),
             onBack = { page = "root" }
         )
-        "data" -> InfoSettingsPage(
-            title = "البيانات والنسخ",
-            items = listOf(
-                "البيانات محلية على الهاتف",
-                "نفس العملية تحتفظ بنفس OP_ID عبر الكشوفات التراكمية",
-                "بيانات المصدر منفصلة عن التعديلات اليدوية",
-                "عمليات المراجعة تحفظ Snapshot لقاعدة العمولة المستخدمة"
-            ),
-            onBack = { page = "root" }
+        "data" -> DataSettingsPage(vm) { page = "root" }
+    }
+}
+
+@Composable
+private fun DataSettingsPage(vm: MainViewModel, onBack: () -> Unit) {
+    val revision by vm.settingsRevision.collectAsState()
+    val stats = remember(revision, vm.transactions.collectAsState().value, vm.passengers.collectAsState().value) {
+        vm.dataHealthStats()
+    }
+    var conflicts by remember(revision) { mutableStateOf(vm.dataConflicts()) }
+    var confirmImportUri by remember { mutableStateOf<Uri?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        if (uri != null) vm.exportBackup(uri)
+    }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) confirmImportUri = uri
+    }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item { SettingsHeader("البيانات والنسخ والمتقدم", onBack) }
+
+        item {
+            SettingsInfoCard(
+                "نسخة احتياطية محلية",
+                "احفظ قاعدة Eslam Check كملف على الهاتف، واستعدها لاحقًا بدون Shizuku. قبل ترقية بنية قاعدة البيانات ينشئ التطبيق نسخة داخلية تلقائيًا."
+            )
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US)
+                            .format(java.util.Date())
+                        exportLauncher.launch("EslamCheck-backup-" + stamp + ".db")
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Rounded.SaveAlt, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("حفظ نسخة")
+                }
+                OutlinedButton(
+                    onClick = { importLauncher.launch(arrayOf("*/*")) },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Rounded.RestorePage, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("استعادة")
+                }
+            }
+        }
+        item {
+            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("سلامة البيانات", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text(
+                        "قاعدة البيانات v" + stats.databaseVersion + " • " +
+                            (stats.databaseBytes / 1024L) + " KB",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        DataHealthMetric("العمليات", stats.transactions, Modifier.weight(1f))
+                        DataHealthMetric("المسافرون", stats.passengers, Modifier.weight(1f))
+                        DataHealthMetric("المسؤولون", stats.responsiblePassengers, Modifier.weight(1f))
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        DataHealthMetric("الأسماء", stats.aliases, Modifier.weight(1f))
+                        DataHealthMetric("المحذوفات", stats.deletedLinks, Modifier.weight(1f))
+                        DataHealthMetric("أسعار الفيز", stats.visaPriceRules, Modifier.weight(1f))
+                    }
+                    Text(
+                        "آخر نسخة داخلية: " + (vm.latestLocalBackupName() ?: "لا توجد بعد"),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedButton(
+                        onClick = { conflicts = vm.dataConflicts() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Rounded.HealthAndSafety, null)
+                        Spacer(Modifier.width(5.dp))
+                        Text("فحص التعارضات")
+                    }
+                }
+            }
+        }
+
+        item {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = if (conflicts.isEmpty()) Good.copy(alpha = 0.10f) else Warn.copy(alpha = 0.10f)
+            ) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text(
+                        if (conflicts.isEmpty()) "✓ لا توجد تعارضات ظاهرة" else "تعارضات تحتاج مراجعة (" + conflicts.size + ")",
+                        color = if (conflicts.isEmpty()) Good else Warn,
+                        fontWeight = FontWeight.Bold
+                    )
+                    conflicts.take(20).forEach { conflict ->
+                        Surface(shape = RoundedCornerShape(10.dp), tonalElevation = 1.dp) {
+                            Column(Modifier.fillMaxWidth().padding(9.dp)) {
+                                Text(conflict.title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                Text(conflict.details, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            SettingsInfoCard(
+                "قواعد البيانات",
+                "البيانات محلية على الهاتف • نفس العملية تحتفظ بنفس OP_ID عبر الكشوفات التراكمية • بيانات المصدر منفصلة عن التعديلات اليدوية • المراجعة تحفظ Snapshot لقاعدة العمولة."
+            )
+        }
+        item {
+            SettingsInfoCard(
+                "ECX / Eslam Bridge",
+                "ECX v3 / K1 هو التنسيق الحالي مع دعم v1 وv2. Checksum يمنع النص الناقص أو المتغير، وتذاكر IQD تُعرف كـ Iraqi Airways تلقائيًا بينما خط USD غير المعروف يبقى مبهمًا."
+            )
+        }
+    }
+
+    confirmImportUri?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { confirmImportUri = null },
+            title = { Text("استعادة نسخة احتياطية") },
+            text = {
+                Text("ستُستبدل قاعدة البيانات الحالية بالنسخة المختارة. سيحفظ التطبيق نسخة أمان من القاعدة الحالية أولًا.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        vm.importBackup(uri)
+                        confirmImportUri = null
+                    }
+                ) {
+                    Icon(Icons.Rounded.Restore, null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("استعادة")
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmImportUri = null }) { Text("إلغاء") } }
         )
-        "advanced" -> InfoSettingsPage(
-            title = "متقدم",
-            items = listOf(
-                "ECX v3 / K1 هو تنسيق النسخ المختصر الحالي مع دعم v1 وv2",
-                "X3 يختصر الحساب والعملة والنوع والخطوط، والتطبيق يعرض الأسماء الكاملة",
-                "Checksum يمنع استيراد نص ناقص أو متغير أثناء النسخ",
-                "Change وNew Change = تغيير، Refund وNew Refund = استرجاع",
-                "تذاكر IQD = Iraqi Airways تلقائيًا، وخط USD غير المعروف يبقى مبهمًا",
-                "Visa وChange وRefund وPayment لا تحتاج Discount في الترجمة المختصرة"
-            ),
-            onBack = { page = "root" }
-        )
+    }
+}
+
+@Composable
+private fun DataHealthMetric(label: String, value: Int, modifier: Modifier = Modifier) {
+    Surface(modifier, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
+        Column(Modifier.padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(value.toString(), fontWeight = FontWeight.Bold)
+            Text(label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -1908,8 +2051,7 @@ private fun SettingsRoot(onOpen: (String) -> Unit) {
         Triple("whatsapp", "واتساب وجهة الإصدار", Icons.Rounded.Chat),
         Triple("appearance", "الشكل والواجهة", Icons.Rounded.Palette),
         Triple("deleted", "سجل المحذوفات", Icons.Rounded.RestoreFromTrash),
-        Triple("data", "البيانات والنسخ", Icons.Rounded.Storage),
-        Triple("advanced", "متقدم", Icons.Rounded.Tune)
+        Triple("data", "البيانات والنسخ والمتقدم", Icons.Rounded.Storage)
     )
 
     LazyColumn(
