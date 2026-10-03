@@ -373,6 +373,16 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             """.trimIndent())
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_passenger_alias_lookup ON passenger_aliases(kind, normalized_value)")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_passenger_alias_owner ON passenger_aliases(passenger_id)")
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS deleted_passenger_aliases(
+                    id TEXT PRIMARY KEY,
+                    passenger_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    normalized_value TEXT NOT NULL,
+                    deleted_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_deleted_alias_unique ON deleted_passenger_aliases(passenger_id, kind, normalized_value)")
             db.rawQuery("SELECT id,name,passport,phone FROM passengers", null).use { c ->
                 while (c.moveToNext()) {
                     val id = c.getString(0)
