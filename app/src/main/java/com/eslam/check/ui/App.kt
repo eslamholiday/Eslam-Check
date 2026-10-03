@@ -372,7 +372,7 @@ private fun StatCard(title: String, value: Int, modifier: Modifier, onClick: () 
 }
 
 @Composable
-private fun ReviewScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
+private fun ReviewScreen(vm: MainViewModel, onDetail: (String, List<String>) -> Unit) {
     val all by vm.transactions.collectAsState()
     var search by remember { mutableStateOf("") }
     var typeFilter by remember { mutableStateOf<Set<TxType>>(emptySet()) }
@@ -396,6 +396,7 @@ private fun ReviewScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                 }
         }
     }
+    val queue = remember(filtered) { filtered.map { it.id } }
 
     Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("المراجعة والتصنيف", fontSize = 24.sp, fontWeight = FontWeight.Bold)
@@ -453,17 +454,36 @@ private fun ReviewScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
             }
         }
 
-        Text("${filtered.size} عملية", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(filtered.size.toString() + " عملية", color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(filtered, key = { it.id }) { tx ->
-                TransactionCard(vm, tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
+                TransactionCard(
+                    vm = vm,
+                    tx = tx,
+                    showUnreviewAction = statusFilter == "REVIEWED",
+                    onDetail = { onDetail(tx.id, queue) },
+                    onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) },
+                    onUnreview = { vm.setReview(tx.id, ReviewState.UNREVIEWED) }
+                )
             }
         }
     }
 }
 
+private data class CardAuditSummary(
+    val text: String,
+    val color: Color
+)
+
 @Composable
-private fun TransactionCard(vm: MainViewModel, tx: Transaction, onDetail: () -> Unit, onReview: () -> Unit) {
+private fun TransactionCard(
+    vm: MainViewModel,
+    tx: Transaction,
+    showUnreviewAction: Boolean = false,
+    onDetail: () -> Unit,
+    onReview: () -> Unit,
+    onUnreview: () -> Unit = {}
+) {
     val airlineMissing = tx.type == TxType.TICKET && tx.currency == Currency.USD && tx.airline.isNullOrBlank()
     val typeAccent = operationTypeColor(vm, tx.type)
     val accent = when {
@@ -473,6 +493,10 @@ private fun TransactionCard(vm: MainViewModel, tx: Transaction, onDetail: () -> 
         tx.reviewState == ReviewState.FOLLOW_UP -> Warn
         else -> typeAccent
     }
+    val auditSummary = remember(tx.id, tx.airline, tx.reviewState, tx.changedAfterReview, tx.discount, tx.amount) {
+        cardAuditSummary(vm, tx)
+    }
+
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onDetail),
         shape = RoundedCornerShape(16.dp),
@@ -480,13 +504,28 @@ private fun TransactionCard(vm: MainViewModel, tx: Transaction, onDetail: () -> 
     ) {
         Row {
             Box(Modifier.width(5.dp).fillMaxHeight().background(accent))
-            Column(Modifier.weight(1f).padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Column(Modifier.weight(1f).padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text(tx.pnr ?: labelFor(tx.type), fontWeight = FontWeight.Bold)
-                    Text(statusFor(tx), fontSize = 11.sp, color = accent)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        when (tx.reviewState) {
+                            ReviewState.REVIEWED -> {
+                                Icon(Icons.Rounded.CheckCircle, "مراجع", tint = Good, modifier = Modifier.size(19.dp))
+                                Text("مراجع", fontSize = 11.sp, color = Good)
+                            }
+                            ReviewState.FOLLOW_UP -> {
+                                Icon(Icons.Rounded.Schedule, "متابعة", tint = Warn, modifier = Modifier.size(19.dp))
+                                Text("متابعة", fontSize = 11.sp, color = Warn)
+                            }
+                            else -> {
+                                Icon(Icons.Rounded.Cancel, "غير مراجع", tint = Bad, modifier = Modifier.size(19.dp))
+                                Text("غير مراجع", fontSize = 11.sp, color = Bad)
+                            }
+                        }
+                    }
                 }
                 Text(
-                    "${labelFor(tx.type)} • ${tx.currency.name}${tx.operationNo?.let { " • #$it" } ?: ""}",
+                    labelFor(tx.type) + " • " + tx.currency.name + (tx.operationNo?.let { " • #" + it } ?: ""),
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -501,17 +540,100 @@ private fun TransactionCard(vm: MainViewModel, tx: Transaction, onDetail: () -> 
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(formatMoney(tx.amount, tx.currency), fontWeight = FontWeight.SemiBold)
-                    if (tx.type == TxType.TICKET && tx.discount != 0.0) Text("Discount ${formatMoney(tx.discount, tx.currency)}", fontSize = 12.sp)
+                    if (tx.type == TxType.TICKET && tx.discount != 0.0) {
+                        Text("Discount " + formatMoney(tx.discount, tx.currency), fontSize = 12.sp)
+                    }
+                }
+
+                auditSummary?.let { summary ->
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = summary.color.copy(alpha = 0.10f)
+                    ) {
+                        Text(
+                            summary.text,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                            color = summary.color,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
                 tx.warning?.let { Text(it, color = Warn, fontSize = 12.sp) }
+
+                if (showUnreviewAction && tx.reviewState == ReviewState.REVIEWED) {
+                    OutlinedButton(
+                        onClick = onUnreview,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Rounded.Undo, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("إلغاء المراجعة")
+                    }
+                }
             }
-            if (tx.reviewState != ReviewState.REVIEWED) {
+
+            if (!showUnreviewAction && tx.reviewState != ReviewState.REVIEWED) {
                 IconButton(onClick = onReview, modifier = Modifier.align(Alignment.CenterVertically)) {
                     Icon(Icons.Rounded.CheckCircleOutline, "تمت المراجعة", tint = Good)
                 }
             }
         }
     }
+}
+
+private fun cardAuditSummary(vm: MainViewModel, tx: Transaction): CardAuditSummary? {
+    if (tx.changedAfterReview) return CardAuditSummary("⚠ تغيّرت بعد المراجعة", Warn)
+    if (tx.type == TxType.UNKNOWN) return CardAuditSummary("؟ نوع العملية مبهم", Mystery)
+    if (tx.type != TxType.TICKET) return null
+    if (tx.currency == Currency.USD && tx.airline.isNullOrBlank()) {
+        return CardAuditSummary("؟ خط غير محدد", Mystery)
+    }
+
+    val details = vm.txPassengerDetails(tx.id)
+    if (details.isEmpty()) return CardAuditSummary("⚠ لا توجد بيانات مسافرين", Warn)
+
+    val rule = vm.ruleForTransaction(tx)
+    val numericRule = rule != null && rule.kind != RuleKind.PRIVATE_MANUAL
+    val needsBase = when {
+        rule?.kind == RuleKind.FIXED_PER_PASSENGER -> false
+        rule?.kind == RuleKind.NONE -> false
+        else -> details.any { it.baseFare == null }
+    }
+    if (needsBase) return CardAuditSummary("⚠ Base Fare ناقص", Warn)
+
+    val tolerance = if (tx.currency == Currency.USD)
+        vm.setting("usd_tolerance", "1").toDoubleOrNull() ?: 1.0
+    else
+        vm.setting("iqd_tolerance", "1000").toDoubleOrNull() ?: 1000.0
+
+    val result = CommissionEngine.calculate(
+        passengers = details,
+        actualSettlement = tx.amount,
+        actualDiscount = tx.discount,
+        referenceTotal = tx.referenceTotal,
+        rule = rule,
+        tolerance = tolerance,
+        route = tx.route
+    )
+
+    if (result.inferredFromDiscount && result.inferredRate != null) {
+        return CardAuditSummary(
+            "≈ عمولة مستنتجة " + String.format("%.2f", result.inferredRate) + "%",
+            MaterialTheme.colorScheme.primary
+        )
+    }
+    if (!result.needsInput && !result.isWithinTolerance && result.difference != null) {
+        return CardAuditSummary(
+            "❌ فرق عمولة " + formatMoney(kotlin.math.abs(result.difference), tx.currency),
+            Bad
+        )
+    }
+    if (!result.needsInput && result.isWithinTolerance && numericRule) {
+        return CardAuditSummary("✓ العمولة مطابقة", Good)
+    }
+    if (result.needsInput) return CardAuditSummary("⚠ تحتاج إكمال المراجعة", Warn)
+    return null
 }
 
 @Composable
