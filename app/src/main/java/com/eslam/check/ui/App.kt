@@ -493,9 +493,7 @@ private fun TransactionCard(
         tx.reviewState == ReviewState.FOLLOW_UP -> Warn
         else -> typeAccent
     }
-    val auditSummary = remember(tx.id, tx.airline, tx.reviewState, tx.changedAfterReview, tx.discount, tx.amount) {
-        cardAuditSummary(vm, tx)
-    }
+    val auditSummary = cardAuditSummary(vm, tx)
 
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onDetail),
@@ -620,7 +618,7 @@ private fun cardAuditSummary(vm: MainViewModel, tx: Transaction): CardAuditSumma
     if (result.inferredFromDiscount && result.inferredRate != null) {
         return CardAuditSummary(
             "≈ عمولة مستنتجة " + String.format("%.2f", result.inferredRate) + "%",
-            MaterialTheme.colorScheme.primary
+            Navy
         )
     }
     if (!result.needsInput && !result.isWithinTolerance && result.difference != null) {
