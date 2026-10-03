@@ -235,6 +235,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun setPassengerBaseFareForAll(txId: String, baseFare: Double?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.setPassengerBaseFareForTransaction(txId, baseFare)
+            refresh()
+        }
+    }
+
     fun setAirline(txId: String, airline: String?) {
         viewModelScope.launch(Dispatchers.IO) {
             db.setAirlineForTransaction(txId, airline, learnPrefix = true)
