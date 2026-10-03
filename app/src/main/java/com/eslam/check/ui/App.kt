@@ -502,6 +502,17 @@ private fun TransactionCard(
         else -> typeAccent
     }
     val auditSummary = cardAuditSummary(vm, tx)
+    val cardPassengerNames = if (tx.type != TxType.PAYMENT) {
+        vm.txPassengerDetails(tx.id)
+            .map { it.sourceName ?: it.passenger.name }
+            .filter { it.isNotBlank() }
+            .distinct()
+    } else emptyList()
+    val passengerNamesLabel = when {
+        cardPassengerNames.isEmpty() -> "لا توجد أسماء مسافرين"
+        cardPassengerNames.size <= 3 -> cardPassengerNames.joinToString(" • ")
+        else -> cardPassengerNames.take(3).joinToString(" • ") + " • +" + (cardPassengerNames.size - 3)
+    }
 
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onDetail),
@@ -537,12 +548,25 @@ private fun TransactionCard(
                 )
                 when {
                     tx.type == TxType.TICKET -> Text(
-                        "الخط: " + (tx.airline ?: "مبهم — اختر من داخل PNR"),
+                        "المسافرون: " + passengerNamesLabel,
                         fontSize = 12.sp,
-                        color = if (airlineMissing) Mystery else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
                     )
                     tx.type == TxType.VISA || (tx.type == TxType.VOID && tx.visaCountry != null) ->
-                        Text("الفيزا: " + (tx.visaCountry ?: "غير محددة"), fontSize = 12.sp)
+                        Text(
+                            "المسافرون: " + passengerNamesLabel,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2
+                        )
+                    tx.type !in setOf(TxType.PAYMENT) && cardPassengerNames.isNotEmpty() ->
+                        Text(
+                            "المسافرون: " + passengerNamesLabel,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2
+                        )
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(formatMoney(tx.amount, tx.currency), fontWeight = FontWeight.SemiBold)
