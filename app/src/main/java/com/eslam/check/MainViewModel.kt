@@ -172,6 +172,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun transactionsForPassenger(id: String): List<Transaction> = db.transactionsForPassenger(id)
     fun transactionsForResponsible(id: String): List<Transaction> = db.transactionsForResponsible(id)
     fun passengerFiles(id: String): List<PassengerFile> = db.passengerFiles(id)
+    fun transactionAttachments(id: String): List<TransactionAttachment> = db.transactionAttachments(id)
+    fun deletedPassengerLinks(): List<DeletedPassengerLink> = db.deletedPassengerLinks()
     fun passengerAliases(id: String): List<PassengerAlias> = db.passengerAliases(id)
     fun mergedPassengers(id: String): List<Passenger> = db.mergedPassengers(id)
     fun auditEvents(entityType: String, entityId: String): List<AuditEvent> = db.auditEvents(entityType, entityId)
@@ -300,6 +302,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setPrimaryPassengerFileImmediate(passengerId: String, id: String) = db.setPrimaryPassengerFile(passengerId, id)
 
+    fun addTransactionAttachmentImmediate(txId: String, uri: String, mimeType: String?, displayName: String?): TransactionAttachment =
+        db.addTransactionAttachment(txId, uri, mimeType, displayName)
+
+    fun deleteTransactionAttachmentImmediate(id: String) = db.deleteTransactionAttachment(id)
+
     fun addPassengerFile(passengerId: String, uri: String, mimeType: String?, displayName: String?) {
         viewModelScope.launch(Dispatchers.IO) {
             db.addPassengerFile(passengerId, uri, mimeType, displayName)
@@ -320,6 +327,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             db.setPrimaryPassengerFile(passengerId, id)
             _message.value = "تم تعيين ملف الجواز الأساسي"
+            refresh()
+        }
+    }
+
+    fun deletePassengerLink(txId: String, passengerId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val deleted = db.deletePassengerLink(txId, passengerId)
+            _message.value = if (deleted != null) "تم إخفاء ارتباط المسافر بهذه العملية" else "تعذر حذف ارتباط المسافر"
+            refresh()
+        }
+    }
+
+    fun restoreDeletedPassengerLink(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val restored = db.restoreDeletedPassengerLink(id)
+            _message.value = if (restored) "تمت إعادة ارتباط المسافر" else "تعذر الاسترداد"
             refresh()
         }
     }
