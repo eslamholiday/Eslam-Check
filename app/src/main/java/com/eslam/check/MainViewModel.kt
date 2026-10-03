@@ -190,6 +190,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun visaPriceRules(): List<VisaPriceRule> = db.visaPriceRules()
     fun visaPriceFor(country: String?, visaType: String?, currency: Currency): VisaPriceRule? =
         db.visaPriceFor(country, visaType, currency)
+    fun dataHealthStats(): DataHealthStats = db.dataHealthStats()
+    fun dataConflicts(): List<DataConflict> = db.dataConflicts()
+    fun latestLocalBackupName(): String? = db.latestLocalBackupName()
 
     fun updateTransaction(tx: Transaction) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -415,6 +418,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val restored = db.restoreDeletedPassengerLink(id)
             _message.value = if (restored) "تمت إعادة ارتباط المسافر" else "تعذر الاسترداد"
             refresh()
+        }
+    }
+
+    fun exportBackup(uri: Uri) {
+        viewModelScope.launch {
+            _busy.value = true
+            try {
+                val bytes = withContext(Dispatchers.IO) {
+                    val resolver = getApplication<Application>().contentResolver
+                    resolver.openOutputStream(uri, "w")?.use { output ->
+                        db.exportDatabase(output)
+                    } ?: error("تعذر إنشاء ملف النسخة")
+                }
+                _message.value = "تم حفظ النسخة الاحتياطية (" + bytes + " بايت)"
+            } catch (e: Exception) {
+                _message.value = "فشل حفظ النسخة: " + (e.message ?: "خطأ غير معروف")
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
+    fun importBackup(uri: Uri) {
+        viewModelScope.launch {
+            _busy.value = true
+            try {
+                val ok = withContext(Dispatchers.IO) {
+                    val resolver = getApplication<Application>().contentResolver
+                    resolver.openInputStream(uri)?.use { input -> db.importDatabase(input) } ?: false
+                }
+                _message.value = if (ok) "تمت استعادة النسخة الاحتياطية" else "تعذر استعادة النسخة؛ أعيدت قاعدة البيانات السابقة"
+                if (ok) refresh()
+            } catch (e: Exception) {
+                _message.value = "فشل الاستعادة: " + (e.message ?: "خطأ غير معروف")
+            } finally {
+                _busy.value = false
+            }
         }
     }
 
