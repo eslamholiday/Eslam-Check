@@ -1368,6 +1368,7 @@ private fun MoreScreen(vm: MainViewModel) {
         "visas" -> VisaSettings(vm) { page = "root" }
         "payments" -> PaymentsSettings(vm) { page = "root" }
         "appearance" -> AppearanceSettings(vm) { page = "root" }
+        "deleted" -> DeletedScreen(vm) { page = "root" }
         "people" -> InfoSettingsPage(
             title = "المسافرون والمسؤولون",
             items = listOf(
@@ -1417,6 +1418,7 @@ private fun SettingsRoot(onOpen: (String) -> Unit) {
         Triple("payments", "التسديدات والمحاسب", Icons.Rounded.Payments),
         Triple("whatsapp", "واتساب وجهة الإصدار", Icons.Rounded.Chat),
         Triple("appearance", "الشكل والواجهة", Icons.Rounded.Palette),
+        Triple("deleted", "سجل المحذوفات", Icons.Rounded.RestoreFromTrash),
         Triple("data", "البيانات والنسخ", Icons.Rounded.Storage),
         Triple("advanced", "متقدم", Icons.Rounded.Tune)
     )
@@ -1441,6 +1443,68 @@ private fun SettingsRoot(onOpen: (String) -> Unit) {
                     Spacer(Modifier.width(12.dp))
                     Text(e.second, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                     Icon(Icons.Rounded.ChevronLeft, null)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeletedScreen(vm: MainViewModel, onBack: () -> Unit) {
+    var rows by remember { mutableStateOf(vm.deletedPassengerLinks()) }
+
+    fun refreshRows() {
+        rows = vm.deletedPassengerLinks()
+    }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item { SettingsHeader("سجل المحذوفات", onBack) }
+        item {
+            SettingsInfoCard(
+                "الحذف الذكي",
+                "حذف المسافر هنا يعني إخفاء ارتباطه من نفس رقم العملية ونفس العملة فقط. إعادة استيراد نفس الكشف لا تعيده، أما إذا ظهر في عملية جديدة برقم مختلف فيظهر طبيعيًا."
+            )
+        }
+        if (rows.isEmpty()) {
+            item {
+                Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                    Text(
+                        "لا توجد ارتباطات محذوفة.",
+                        modifier = Modifier.fillMaxWidth().padding(18.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else {
+            items(rows, key = { it.id }) { item ->
+                Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(item.passengerName, fontWeight = FontWeight.Bold)
+                        Text(
+                            item.currency.name + " • #" + (item.operationNo ?: "بدون رقم عملية"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp
+                        )
+                        item.documentNo?.takeIf { it.isNotBlank() }?.let {
+                            Text("Ticket: " + it, fontSize = 12.sp)
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            OutlinedButton(
+                                onClick = {
+                                    vm.restoreDeletedPassengerLink(item.id)
+                                    refreshRows()
+                                }
+                            ) {
+                                Icon(Icons.Rounded.Restore, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("استرداد")
+                            }
+                        }
+                    }
                 }
             }
         }
