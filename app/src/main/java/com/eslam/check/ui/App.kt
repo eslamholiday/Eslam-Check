@@ -1138,6 +1138,8 @@ private fun PassengerDetailDialog(
     }
     var responsiblePicker by remember { mutableStateOf(false) }
     var dependentPicker by remember { mutableStateOf(false) }
+    var networkOpen by remember { mutableStateOf(false) }
+    var dependentSearch by remember { mutableStateOf("") }
     var unmergeTarget by remember { mutableStateOf<Passenger?>(null) }
     var deleteAliasTarget by remember { mutableStateOf<PassengerAlias?>(null) }
     var pendingProfileResponsible by remember { mutableStateOf<Passenger?>(null) }
@@ -1148,8 +1150,20 @@ private fun PassengerDetailDialog(
     val mergedRecords = vm.mergedPassengers(passenger.id)
     val dependents = vm.dependentsOf(passenger.id)
     val currentResponsible = edit.responsibleId?.let { id -> vm.passengerById(id) }
-    val personalOps = remember(passenger.id, vm.transactions.collectAsState().value) { vm.transactionsForPassenger(passenger.id) }
-    val dependentOps = remember(passenger.id, allPassengers) { if (passenger.isResponsible) vm.transactionsForResponsible(passenger.id) else emptyList() }
+    val allTransactions by vm.transactions.collectAsState()
+    val personalOps = remember(passenger.id, allTransactions) { vm.transactionsForPassenger(passenger.id) }
+    val dependentOps = remember(passenger.id, allPassengers, allTransactions) { if (passenger.isResponsible) vm.transactionsForResponsible(passenger.id) else emptyList() }
+    val activityMap = remember(allPassengers, allTransactions) { vm.passengerActivityStats() }
+    val operationSourceNames = remember(passenger.id, personalOps) {
+        personalOps.flatMap { op ->
+            vm.txPassengerDetails(op.id)
+                .filter { it.passenger.id == passenger.id }
+                .mapNotNull { it.sourceName?.takeIf(String::isNotBlank) }
+        }.distinct().filterNot { it.equals(edit.name, true) }
+    }
+    val visibleDependents = remember(dependents, dependentSearch) {
+        dependents.filter { dependentSearch.isBlank() || it.name.contains(dependentSearch, true) || it.phone.orEmpty().contains(dependentSearch) }
+    }
 
     val contactLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -1372,6 +1386,27 @@ private fun PassengerDetailDialog(
                         }
                     }
 
+                    if (operationSourceNames.isNotEmpty()) {
+                        item {
+                            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                                Column(
+                                    Modifier.fillMaxWidth().padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text("الأسماء كما وردت في العمليات", fontWeight = FontWeight.Bold)
+                                    Text(
+                                        "داخل التذكرة أو الفيزا يبقى الاسم الأصلي الوارد في تلك العملية.",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    operationSourceNames.forEach { sourceName ->
+                                        Text("• " + sourceName, fontSize = 13.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     item {
                         Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
                             Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1460,20 +1495,53 @@ private fun PassengerDetailDialog(
 
                     if (edit.isResponsible) {
                         item {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text("المسافرون التابعون (" + dependents.size + ")", fontWeight = FontWeight.Bold)
-                                TextButton(onClick = { dependentPicker = true }) {
-                                    Icon(Icons.Rounded.GroupAdd, null)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("إضافة عدة")
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("المسافرون التابعون (" + dependents.size + ")", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                                    TextButton(onClick = { networkOpen = true }) {
+                                        Icon(Icons.Rounded.AccountTree, null, modifier = Modifier.size(17.dp))
+                                        Spacer(Modifier.width(3.dp))
+                                        Text("الشبكة")
+                                    }
+                                    TextButton(onClick = { dependentPicker = true }) {
+                                        Icon(Icons.Rounded.GroupAdd, null, modifier = Modifier.size(17.dp))
+                                        Spacer(Modifier.width(3.dp))
+                                        Text("إضافة")
+                                    }
+                                }
+                                if (dependents.size > 4) {
+                                    OutlinedTextField(
+                                        dependentSearch,
+                                        { dependentSearch = it },
+                                        Modifier.fillMaxWidth(),
+                                        label = { Text("بحث داخل التابعين") },
+                                        leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                                        singleLine = true
+                                    )
                                 }
                             }
                         }
-                        items(dependents, key = { "dep-" + it.id }) { d ->
-                            Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                                Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text(d.name, Modifier.weight(1f).clickable { onOpenPassenger(d) }, color = MaterialTheme.colorScheme.primary)
-                                    TextButton(onClick = { vm.assignResponsible(d.id, null) }) { Text("فك الربط") }
+                        items(visibleDependents, key = { "dep-" + it.id }) { d ->
+                            val activity = activityMap[d.id] ?: PassengerActivityStats(d.id)
+                            Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)) {
+                                Row(Modifier.fillMaxWidth().padding(9.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(
+                                        Modifier.weight(1f).clickable { onOpenPassenger(d) },
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text(d.name, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            listOfNotNull(
+                                                d.responsibleRelation?.takeIf { it.isNotBlank() },
+                                                activity.total.toString() + " عملية"
+                                            ).joinToString(" • "),
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    IconButton(onClick = { vm.assignResponsible(d.id, null) }) {
+                                        Icon(Icons.Rounded.LinkOff, "فك الربط", tint = MaterialTheme.colorScheme.error)
+                                    }
                                 }
                             }
                         }
@@ -1545,6 +1613,45 @@ private fun PassengerDetailDialog(
                 ids.forEach { vm.assignResponsible(it, edit.id) }
                 dependentPicker = false
             }
+        )
+    }
+
+    if (networkOpen) {
+        val network = remember(passenger.id, allTransactions) { vm.passengerNetwork(passenger.id) }
+        AlertDialog(
+            onDismissRequest = { networkOpen = false },
+            title = { Text("شبكة المسؤول") },
+            text = {
+                if (network.size <= 1) {
+                    Text("لا توجد روابط مشتركة إضافية.")
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        items(network.drop(1), key = { it.passenger.id }) { node ->
+                            Surface(shape = RoundedCornerShape(12.dp), tonalElevation = 1.dp) {
+                                Column(Modifier.fillMaxWidth().padding(9.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(node.passenger.name, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        buildString {
+                                            node.viaPassengerName?.let { append("عبر ").append(it) }
+                                            node.pnr?.let {
+                                                if (isNotEmpty()) append(" • ")
+                                                append("PNR ").append(it)
+                                            }
+                                            node.operationNo?.let {
+                                                if (isNotEmpty()) append(" • ")
+                                                append("#").append(it)
+                                            }
+                                        }.ifBlank { "ارتباط مشترك" },
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { networkOpen = false }) { Text("تم") } }
         )
     }
 
