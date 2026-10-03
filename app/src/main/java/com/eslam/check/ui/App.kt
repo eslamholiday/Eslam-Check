@@ -1495,8 +1495,10 @@ private fun DeletedScreen(vm: MainViewModel, onBack: () -> Unit) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             OutlinedButton(
                                 onClick = {
-                                    vm.restoreDeletedPassengerLink(item.id)
-                                    refreshRows()
+                                    if (vm.restoreDeletedPassengerLinkImmediate(item.id)) {
+                                        refreshRows()
+                                        vm.refresh()
+                                    }
                                 }
                             ) {
                                 Icon(Icons.Rounded.Restore, null, modifier = Modifier.size(18.dp))
@@ -2061,7 +2063,7 @@ private fun PaymentsSettings(vm: MainViewModel, onBack: () -> Unit) {
         item {
             SettingsInfoCard(
                 "التسديدات",
-                "لا يظهر Discount. يمكن حفظ رابط/مرفق لكل عملية، وزر المحاسب يفتح واتساب الرقم المحفوظ."
+                "لا يظهر Discount. يمكن إرفاق صور أو PDF لكل عملية تسديد، مع المعاينة والتغيير والحذف. زر المحاسب يفتح واتساب الرقم المحفوظ."
             )
         }
         item {
