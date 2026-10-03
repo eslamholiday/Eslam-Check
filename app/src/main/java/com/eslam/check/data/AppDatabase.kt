@@ -1841,13 +1841,57 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             "SELECT * FROM airlines WHERE LOWER(name)=LOWER(?) OR code=? LIMIT 1",
             arrayOf(cleanName, cleanCode)
         ).use { c -> if (c.moveToFirst()) AirlineInfo(c.s("id"), c.s("code"), c.s("name"), c.i("active")==1, c.l("updated_at")) else null }
-        if (existing != null) return existing
+        if (existing != null) {
+            if (!existing.active) {
+                writableDatabase.update("airlines", ContentValues().apply {
+                    put("active", 1)
+                    put("updated_at", System.currentTimeMillis())
+                }, "id=?", arrayOf(existing.id))
+                audit("airline", existing.id, "restore", existing.name)
+                return existing.copy(active = true, updatedAt = System.currentTimeMillis())
+            }
+            return existing
+        }
         val item = AirlineInfo("AIR-" + UUID.randomUUID().toString(), cleanCode, cleanName)
         writableDatabase.insert("airlines", null, ContentValues().apply {
             put("id", item.id); put("code", item.code); put("name", item.name); put("active", 1); put("updated_at", item.updatedAt)
         })
         audit("airline", item.id, "create", "${item.code}|${item.name}")
         return item
+    }
+
+    fun deleteAirline(id: String): Boolean {
+        val airline = readableDatabase.rawQuery(
+            "SELECT * FROM airlines WHERE id=? LIMIT 1",
+            arrayOf(id)
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null else AirlineInfo(
+                id = cursor.s("id"),
+                code = cursor.s("code"),
+                name = cursor.s("name"),
+                active = cursor.i("active") == 1,
+                updatedAt = cursor.l("updated_at")
+            )
+        } ?: return false
+
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.update(
+                "airlines",
+                ContentValues().apply {
+                    put("active", 0)
+                    put("updated_at", System.currentTimeMillis())
+                },
+                "id=?",
+                arrayOf(id)
+            )
+            writableDatabase.delete("airline_prefixes", "LOWER(airline)=LOWER(?)", arrayOf(airline.name))
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        audit("airline", id, "delete", airline.name)
+        return true
     }
 
     private fun resolveAirlineToken(value: String?): String? {
