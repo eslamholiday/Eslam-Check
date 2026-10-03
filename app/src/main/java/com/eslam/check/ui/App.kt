@@ -1,6 +1,9 @@
 package com.eslam.check.ui
 
 import android.app.Activity
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.pdf.PdfRenderer
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -11,6 +14,7 @@ import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -35,6 +39,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -46,6 +52,8 @@ import androidx.compose.ui.window.DialogProperties
 import com.eslam.check.MainViewModel
 import com.eslam.check.data.*
 import com.eslam.check.util.CommissionEngine
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 private enum class MainTab(val title: String) {
@@ -1360,6 +1368,7 @@ private fun MoreScreen(vm: MainViewModel) {
         "visas" -> VisaSettings(vm) { page = "root" }
         "payments" -> PaymentsSettings(vm) { page = "root" }
         "appearance" -> AppearanceSettings(vm) { page = "root" }
+        "deleted" -> DeletedScreen(vm) { page = "root" }
         "people" -> InfoSettingsPage(
             title = "المسافرون والمسؤولون",
             items = listOf(
@@ -1409,6 +1418,7 @@ private fun SettingsRoot(onOpen: (String) -> Unit) {
         Triple("payments", "التسديدات والمحاسب", Icons.Rounded.Payments),
         Triple("whatsapp", "واتساب وجهة الإصدار", Icons.Rounded.Chat),
         Triple("appearance", "الشكل والواجهة", Icons.Rounded.Palette),
+        Triple("deleted", "سجل المحذوفات", Icons.Rounded.RestoreFromTrash),
         Triple("data", "البيانات والنسخ", Icons.Rounded.Storage),
         Triple("advanced", "متقدم", Icons.Rounded.Tune)
     )
@@ -1433,6 +1443,70 @@ private fun SettingsRoot(onOpen: (String) -> Unit) {
                     Spacer(Modifier.width(12.dp))
                     Text(e.second, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                     Icon(Icons.Rounded.ChevronLeft, null)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeletedScreen(vm: MainViewModel, onBack: () -> Unit) {
+    var rows by remember { mutableStateOf(vm.deletedPassengerLinks()) }
+
+    fun refreshRows() {
+        rows = vm.deletedPassengerLinks()
+    }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item { SettingsHeader("سجل المحذوفات", onBack) }
+        item {
+            SettingsInfoCard(
+                "الحذف الذكي",
+                "حذف المسافر هنا يعني إخفاء ارتباطه من نفس رقم العملية ونفس العملة فقط. إعادة استيراد نفس الكشف لا تعيده، أما إذا ظهر في عملية جديدة برقم مختلف فيظهر طبيعيًا."
+            )
+        }
+        if (rows.isEmpty()) {
+            item {
+                Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                    Text(
+                        "لا توجد ارتباطات محذوفة.",
+                        modifier = Modifier.fillMaxWidth().padding(18.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else {
+            items(rows, key = { it.id }) { item ->
+                Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(item.passengerName, fontWeight = FontWeight.Bold)
+                        Text(
+                            item.currency.name + " • #" + (item.operationNo ?: "بدون رقم عملية"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp
+                        )
+                        item.documentNo?.takeIf { it.isNotBlank() }?.let {
+                            Text("Ticket: " + it, fontSize = 12.sp)
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (vm.restoreDeletedPassengerLinkImmediate(item.id)) {
+                                        refreshRows()
+                                        vm.refresh()
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Rounded.Restore, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("استرداد")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1989,7 +2063,7 @@ private fun PaymentsSettings(vm: MainViewModel, onBack: () -> Unit) {
         item {
             SettingsInfoCard(
                 "التسديدات",
-                "لا يظهر Discount. يمكن حفظ رابط/مرفق لكل عملية، وزر المحاسب يفتح واتساب الرقم المحفوظ."
+                "لا يظهر Discount. يمكن إرفاق صور أو PDF لكل عملية تسديد، مع المعاينة والتغيير والحذف. زر المحاسب يفتح واتساب الرقم المحفوظ."
             )
         }
         item {
@@ -2379,6 +2453,37 @@ private fun TransactionDetailDialog(
     var selectedPassenger by remember { mutableStateOf<Passenger?>(null) }
     var rawOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
+    var attachments by remember(id) { mutableStateOf(vm.transactionAttachments(id)) }
+    var receiptPreview by remember { mutableStateOf<TransactionAttachment?>(null) }
+    var replaceAttachmentId by remember { mutableStateOf<String?>(null) }
+    var deletePassengerTarget by remember { mutableStateOf<Passenger?>(null) }
+
+    val receiptLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val chosen = if (replaceAttachmentId != null) uris.take(1) else uris
+        if (chosen.isNotEmpty()) {
+            replaceAttachmentId?.let { vm.deleteTransactionAttachmentImmediate(it) }
+            chosen.forEach { uri ->
+                try {
+                    context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (_: Exception) { }
+                var displayName: String? = null
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0) displayName = cursor.getString(idx)
+                    }
+                }
+                vm.addTransactionAttachmentImmediate(
+                    txId = id,
+                    uri = uri.toString(),
+                    mimeType = context.contentResolver.getType(uri),
+                    displayName = displayName
+                )
+            }
+            attachments = vm.transactionAttachments(id)
+        }
+        replaceAttachmentId = null
+    }
 
     val rule = vm.ruleForTransaction(edit)
     val tolerance = if (edit.currency == Currency.USD) {
@@ -2586,7 +2691,8 @@ private fun TransactionDetailDialog(
                                         if (applyToAll) vm.setPassengerBaseFareForAll(edit.id, value)
                                         else vm.setPassengerBaseFare(edit.id, passengerId, value)
                                     },
-                                    onOpenPassenger = { selectedPassenger = it }
+                                    onOpenPassenger = { selectedPassenger = it },
+                                    onDeleteLink = { deletePassengerTarget = it }
                                 )
                             }
                         }
@@ -2687,6 +2793,12 @@ private fun TransactionDetailDialog(
                                             IconButton(onClick = { copyToClipboard(context, "الاسم", d.passenger.name) }, modifier = Modifier.size(30.dp)) {
                                                 Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
                                             }
+                                            IconButton(
+                                                onClick = { deletePassengerTarget = d.passenger },
+                                                modifier = Modifier.size(30.dp)
+                                            ) {
+                                                Icon(Icons.Rounded.PersonRemove, "حذف الارتباط", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                            }
                                         }
                                     }
                                     if (details.size > 1 && responsible == null) {
@@ -2707,26 +2819,117 @@ private fun TransactionDetailDialog(
                     if (edit.type == TxType.REFUND) {
                         item { SettingsInfoCard("استرجاع", "يسجل ويراجع فقط؛ لا يظهر Discount ولا يتم فرض معادلة استرجاع تلقائية.") }
                     }
+
+                    if (edit.type in setOf(TxType.CHANGE, TxType.REFUND, TxType.REISSUE, TxType.FEE, TxType.UNKNOWN) && details.isNotEmpty()) {
+                        item {
+                            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text("المسافرون", fontWeight = FontWeight.Bold)
+                                    details.forEach { d ->
+                                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                d.passenger.name,
+                                                Modifier.weight(1f).clickable { selectedPassenger = d.passenger },
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            d.documentNo?.let { Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                            IconButton(
+                                                onClick = { copyToClipboard(context, "الاسم", d.passenger.name) },
+                                                modifier = Modifier.size(30.dp)
+                                            ) {
+                                                Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
+                                            }
+                                            IconButton(
+                                                onClick = { deletePassengerTarget = d.passenger },
+                                                modifier = Modifier.size(30.dp)
+                                            ) {
+                                                Icon(Icons.Rounded.PersonRemove, "حذف الارتباط", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if (edit.type == TxType.PAYMENT) {
                         item {
                             Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
                                 Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("رابط التسديد / المرفق", fontWeight = FontWeight.Bold)
-                                    OutlinedTextField(
-                                        edit.externalLink.orEmpty(),
-                                        { edit = edit.copy(externalLink = it.ifBlank { null }) },
+                                    Row(
                                         Modifier.fillMaxWidth(),
-                                        label = { Text("ألصق رابط الإيصال أو المستند") },
-                                        minLines = 2
-                                    )
-                                    if (edit.externalLink.orEmpty().startsWith("http")) {
-                                        OutlinedButton(
-                                            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(edit.externalLink))) },
-                                            modifier = Modifier.fillMaxWidth()
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text("مرفقات التسديد", fontWeight = FontWeight.Bold)
+                                            Text(
+                                                "صور أو PDF محفوظة مع العملية ويمكن معاينتها أو تغييرها أو حذفها.",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        FilledTonalButton(
+                                            onClick = {
+                                                replaceAttachmentId = null
+                                                receiptLauncher.launch(arrayOf("image/*", "application/pdf"))
+                                            }
                                         ) {
-                                            Icon(Icons.Rounded.OpenInNew, null)
-                                            Spacer(Modifier.width(5.dp))
-                                            Text("فتح الرابط")
+                                            Icon(Icons.Rounded.AttachFile, null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("إضافة")
+                                        }
+                                    }
+
+                                    if (attachments.isEmpty()) {
+                                        Text("لا يوجد إيصال مرفق.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                                    } else {
+                                        attachments.forEach { attachment ->
+                                            Surface(
+                                                modifier = Modifier.fillMaxWidth().clickable { receiptPreview = attachment },
+                                                shape = RoundedCornerShape(12.dp),
+                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                            ) {
+                                                Row(
+                                                    Modifier.fillMaxWidth().padding(9.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Icon(
+                                                        if (attachment.mimeType.orEmpty().contains("pdf", true)) Icons.Rounded.PictureAsPdf else Icons.Rounded.Image,
+                                                        null,
+                                                        tint = MaterialTheme.colorScheme.primary
+                                                    )
+                                                    Column(Modifier.weight(1f)) {
+                                                        Text(attachment.displayName ?: "مرفق التسديد", fontWeight = FontWeight.SemiBold, maxLines = 2)
+                                                        Text(
+                                                            if (attachment.mimeType.orEmpty().contains("pdf", true)) "PDF • اضغط للمعاينة" else "صورة • اضغط للمعاينة",
+                                                            fontSize = 11.sp,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                    IconButton(
+                                                        onClick = {
+                                                            replaceAttachmentId = attachment.id
+                                                            receiptLauncher.launch(arrayOf("image/*", "application/pdf"))
+                                                        },
+                                                        modifier = Modifier.size(34.dp)
+                                                    ) {
+                                                        Icon(Icons.Rounded.Edit, "تغيير", modifier = Modifier.size(18.dp))
+                                                    }
+                                                    IconButton(
+                                                        onClick = {
+                                                            vm.deleteTransactionAttachmentImmediate(attachment.id)
+                                                            if (receiptPreview?.id == attachment.id) receiptPreview = null
+                                                            attachments = vm.transactionAttachments(id)
+                                                        },
+                                                        modifier = Modifier.size(34.dp)
+                                                    ) {
+                                                        Icon(Icons.Rounded.DeleteOutline, "حذف", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -2818,9 +3021,23 @@ private fun TransactionDetailDialog(
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val primaryActionColor = when {
+                        edit.type == TxType.PAYMENT -> operationTypeColor(vm, TxType.PAYMENT)
+                        edit.type == TxType.VISA || (edit.type == TxType.VOID && edit.visaCountry != null) -> operationTypeColor(vm, TxType.VISA)
+                        else -> Navy
+                    }
                     OutlinedButton(
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.widthIn(min = 132.dp).heightIn(min = 42.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = primaryActionColor.copy(alpha = 0.10f),
+                            contentColor = primaryActionColor
+                        ),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
                         onClick = {
                             when {
                                 edit.type == TxType.VISA || (edit.type == TxType.VOID && edit.visaCountry != null) -> {
@@ -2847,7 +3064,8 @@ private fun TransactionDetailDialog(
                                 edit.type == TxType.PAYMENT -> Icons.Rounded.AccountCircle
                                 else -> Icons.Rounded.Chat
                             },
-                            null
+                            null,
+                            modifier = Modifier.size(17.dp)
                         )
                         Spacer(Modifier.width(4.dp))
                         Text(
@@ -2855,13 +3073,20 @@ private fun TransactionDetailDialog(
                                 edit.type == TxType.VISA || (edit.type == TxType.VOID && edit.visaCountry != null) -> "رابط الفيز"
                                 edit.type == TxType.PAYMENT -> vm.setting("accountant_name", "المحاسب")
                                 else -> "جهة الإصدار"
-                            }
+                            },
+                            maxLines = 2,
+                            fontSize = 12.sp
                         )
                     }
 
                     OutlinedButton(
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.widthIn(min = 150.dp).heightIn(min = 42.dp),
                         enabled = details.isNotEmpty() || responsible != null,
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Good.copy(alpha = 0.10f),
+                            contentColor = Good
+                        ),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
                         onClick = {
                             val current = responsible
                             if (current == null) {
@@ -2877,7 +3102,11 @@ private fun TransactionDetailDialog(
                             }
                         }
                     ) {
-                        Icon(if (responsible?.phone.orEmpty().filter(Char::isDigit).isNotBlank()) Icons.Rounded.Chat else Icons.Rounded.SupervisorAccount, null)
+                        Icon(
+                            if (responsible?.phone.orEmpty().filter(Char::isDigit).isNotBlank()) Icons.Rounded.Chat else Icons.Rounded.SupervisorAccount,
+                            null,
+                            modifier = Modifier.size(17.dp)
+                        )
                         Spacer(Modifier.width(4.dp))
                         Text(
                             when {
@@ -2885,14 +3114,21 @@ private fun TransactionDetailDialog(
                                 responsible.phone.orEmpty().filter(Char::isDigit).isNotBlank() -> responsible.name + " • واتساب"
                                 else -> "المسؤول: " + responsible.name
                             },
-                            maxLines = 2
+                            maxLines = 2,
+                            fontSize = 12.sp
                         )
                     }
 
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = { vm.setReview(edit.id, ReviewState.FOLLOW_UP) }
-                    ) { Text("متابعة") }
+                    FilledIconButton(
+                        onClick = { vm.setReview(edit.id, ReviewState.FOLLOW_UP) },
+                        modifier = Modifier.size(42.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = Bad,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Icon(Icons.Rounded.Schedule, "متابعة", modifier = Modifier.size(19.dp))
+                    }
                 }
 
                 if (edit.reviewState == ReviewState.REVIEWED) {
@@ -3033,6 +3269,160 @@ private fun TransactionDetailDialog(
             )
         }
     }
+
+    deletePassengerTarget?.let { passenger ->
+        AlertDialog(
+            onDismissRequest = { deletePassengerTarget = null },
+            title = { Text("حذف ارتباط المسافر") },
+            text = {
+                Text(
+                    "سيُخفى «" + passenger.name + "» من هذه العملية فقط. إذا أعدت استيراد نفس رقم العملية ونفس العملة فلن يعود تلقائيًا، أما إذا ظهر في عملية جديدة برقم مختلف فسيظهر بشكل طبيعي."
+                )
+            },
+            confirmButton = {
+                Button(
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    onClick = {
+                        vm.deletePassengerLink(edit.id, passenger.id)
+                        deletePassengerTarget = null
+                    }
+                ) {
+                    Icon(Icons.Rounded.PersonRemove, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("حذف الارتباط")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletePassengerTarget = null }) { Text("إلغاء") }
+            }
+        )
+    }
+
+    receiptPreview?.let { attachment ->
+        ReceiptPreviewDialog(
+            attachment = attachment,
+            onDismiss = { receiptPreview = null }
+        )
+    }
+}
+
+private data class ReceiptPreviewState(
+    val bitmap: Bitmap? = null,
+    val error: String? = null
+)
+
+@Composable
+private fun ReceiptPreviewDialog(
+    attachment: TransactionAttachment,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val state by produceState(
+        initialValue = ReceiptPreviewState(),
+        attachment.id,
+        attachment.uri,
+        attachment.mimeType
+    ) {
+        value = withContext(Dispatchers.IO) {
+            try {
+                ReceiptPreviewState(bitmap = renderReceiptBitmap(context, attachment))
+            } catch (e: Exception) {
+                ReceiptPreviewState(error = e.message ?: "تعذر فتح المرفق")
+            }
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            Modifier.fillMaxWidth(0.97f).fillMaxHeight(0.92f),
+            shape = RoundedCornerShape(22.dp)
+        ) {
+            Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(attachment.displayName ?: "مرفق التسديد", fontWeight = FontWeight.Bold, maxLines = 2)
+                        Text(
+                            if (attachment.mimeType.orEmpty().contains("pdf", true)) "معاينة الصفحة الأولى من PDF" else "معاينة الصورة",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, "إغلاق") }
+                }
+
+                Box(
+                    Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    when {
+                        state.bitmap != null -> Image(
+                            bitmap = state.bitmap!!.asImageBitmap(),
+                            contentDescription = attachment.displayName,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit
+                        )
+                        state.error != null -> Text(state.error!!, color = MaterialTheme.colorScheme.error)
+                        else -> CircularProgressIndicator()
+                    }
+                }
+
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        try {
+                            val uri = Uri.parse(attachment.uri)
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(uri, attachment.mimeType ?: "*/*")
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                            )
+                        } catch (_: Exception) {
+                            Toast.makeText(context, "تعذر فتح الملف بعارض خارجي", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                ) {
+                    Icon(Icons.Rounded.OpenInNew, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("فتح الملف")
+                }
+            }
+        }
+    }
+}
+
+private fun renderReceiptBitmap(context: Context, attachment: TransactionAttachment): Bitmap? {
+    val uri = Uri.parse(attachment.uri)
+    return if (attachment.mimeType.orEmpty().contains("pdf", true) ||
+        attachment.displayName.orEmpty().endsWith(".pdf", true)
+    ) {
+        context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+            PdfRenderer(descriptor).use { renderer ->
+                if (renderer.pageCount <= 0) return@use null
+                renderer.openPage(0).use { page ->
+                    val maxSide = 1800f
+                    val scale = minOf(
+                        2f,
+                        maxSide / maxOf(page.width.toFloat(), page.height.toFloat())
+                    ).coerceAtLeast(1f)
+                    val bitmap = Bitmap.createBitmap(
+                        (page.width * scale).roundToInt().coerceAtLeast(1),
+                        (page.height * scale).roundToInt().coerceAtLeast(1),
+                        Bitmap.Config.ARGB_8888
+                    )
+                    bitmap.eraseColor(android.graphics.Color.WHITE)
+                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    bitmap
+                }
+            }
+        }
+    } else {
+        context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream)
+    }
 }
 
 @Composable
@@ -3042,7 +3432,8 @@ private fun PassengerAuditCard(
     commissionForPassenger: Double?,
     inferredCommission: Boolean,
     onBaseFareCommit: (String, Double?) -> Unit,
-    onOpenPassenger: (Passenger) -> Unit
+    onOpenPassenger: (Passenger) -> Unit,
+    onDeleteLink: (Passenger) -> Unit
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -3054,13 +3445,17 @@ private fun PassengerAuditCard(
     }
 
     fun commitBaseFare() {
-        val value = baseText.toDoubleOrNull()
+        val value = when {
+            baseText.isBlank() -> null
+            else -> baseText.toDoubleOrNull() ?: return
+        }
         if (value != lastCommitted) {
             onBaseFareCommit(detail.passenger.id, value)
             lastCommitted = value
         }
     }
 
+    val invalidBase = baseText.isNotBlank() && baseText.toDoubleOrNull() == null
     val base = baseText.toDoubleOrNull()
     val taxes = if (detail.amount != null && base != null) detail.amount - base else null
 
@@ -3078,6 +3473,12 @@ private fun PassengerAuditCard(
                     modifier = Modifier.size(30.dp)
                 ) {
                     Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
+                }
+                IconButton(
+                    onClick = { onDeleteLink(detail.passenger) },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(Icons.Rounded.PersonRemove, "حذف الارتباط", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
                 }
                 Text(detail.passengerType ?: "", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -3117,6 +3518,8 @@ private fun PassengerAuditCard(
                         focusManager.clearFocus()
                     }
                 ),
+                isError = invalidBase,
+                supportingText = if (invalidBase) ({ Text("القيمة غير صالحة ولن يتم مسح الإدخال حتى تصححها.") }) else null,
                 singleLine = true
             )
 
