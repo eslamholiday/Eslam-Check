@@ -1913,6 +1913,7 @@ private fun CommissionRuleDialog(
     var effectiveFrom by remember(initial.id) { mutableStateOf(initial.effectiveFrom.orEmpty()) }
     var direction by remember(initial.id) { mutableStateOf(initial.direction) }
     var note by remember(initial.id) { mutableStateOf(initial.note.orEmpty()) }
+    val effectiveFromValid = effectiveFrom.isBlank() || Regex("""\d{4}-\d{2}-\d{2}""").matches(effectiveFrom)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1969,8 +1970,12 @@ private fun CommissionRuleDialog(
                 }
                 item {
                     OutlinedTextField(
-                        effectiveFrom, { effectiveFrom = it }, Modifier.fillMaxWidth(),
+                        effectiveFrom,
+                        { effectiveFrom = it.filter { ch -> ch.isDigit() || ch == '-' }.take(10) },
+                        Modifier.fillMaxWidth(),
                         label = { Text("سارية من YYYY-MM-DD - اختياري") },
+                        isError = !effectiveFromValid,
+                        supportingText = if (!effectiveFromValid) ({ Text("اكتب التاريخ كاملًا مثل 2026-10-03 أو اتركه فارغًا") }) else null,
                         singleLine = true
                     )
                 }
@@ -1981,7 +1986,7 @@ private fun CommissionRuleDialog(
         },
         confirmButton = {
             Button(
-                enabled = airline.isNotBlank(),
+                enabled = airline.isNotBlank() && effectiveFromValid,
                 onClick = {
                     vm.saveRule(
                         airline = airline,
