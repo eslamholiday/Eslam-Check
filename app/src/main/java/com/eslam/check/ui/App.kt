@@ -2978,9 +2978,23 @@ private fun TransactionDetailDialog(
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val primaryActionColor = when {
+                        edit.type == TxType.PAYMENT -> operationTypeColor(vm, TxType.PAYMENT)
+                        edit.type == TxType.VISA || (edit.type == TxType.VOID && edit.visaCountry != null) -> operationTypeColor(vm, TxType.VISA)
+                        else -> Navy
+                    }
                     OutlinedButton(
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.widthIn(min = 132.dp).heightIn(min = 42.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = primaryActionColor.copy(alpha = 0.10f),
+                            contentColor = primaryActionColor
+                        ),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
                         onClick = {
                             when {
                                 edit.type == TxType.VISA || (edit.type == TxType.VOID && edit.visaCountry != null) -> {
@@ -3007,7 +3021,8 @@ private fun TransactionDetailDialog(
                                 edit.type == TxType.PAYMENT -> Icons.Rounded.AccountCircle
                                 else -> Icons.Rounded.Chat
                             },
-                            null
+                            null,
+                            modifier = Modifier.size(17.dp)
                         )
                         Spacer(Modifier.width(4.dp))
                         Text(
@@ -3015,13 +3030,20 @@ private fun TransactionDetailDialog(
                                 edit.type == TxType.VISA || (edit.type == TxType.VOID && edit.visaCountry != null) -> "رابط الفيز"
                                 edit.type == TxType.PAYMENT -> vm.setting("accountant_name", "المحاسب")
                                 else -> "جهة الإصدار"
-                            }
+                            },
+                            maxLines = 2,
+                            fontSize = 12.sp
                         )
                     }
 
                     OutlinedButton(
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.widthIn(min = 150.dp).heightIn(min = 42.dp),
                         enabled = details.isNotEmpty() || responsible != null,
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Good.copy(alpha = 0.10f),
+                            contentColor = Good
+                        ),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
                         onClick = {
                             val current = responsible
                             if (current == null) {
@@ -3037,7 +3059,11 @@ private fun TransactionDetailDialog(
                             }
                         }
                     ) {
-                        Icon(if (responsible?.phone.orEmpty().filter(Char::isDigit).isNotBlank()) Icons.Rounded.Chat else Icons.Rounded.SupervisorAccount, null)
+                        Icon(
+                            if (responsible?.phone.orEmpty().filter(Char::isDigit).isNotBlank()) Icons.Rounded.Chat else Icons.Rounded.SupervisorAccount,
+                            null,
+                            modifier = Modifier.size(17.dp)
+                        )
                         Spacer(Modifier.width(4.dp))
                         Text(
                             when {
@@ -3045,14 +3071,21 @@ private fun TransactionDetailDialog(
                                 responsible.phone.orEmpty().filter(Char::isDigit).isNotBlank() -> responsible.name + " • واتساب"
                                 else -> "المسؤول: " + responsible.name
                             },
-                            maxLines = 2
+                            maxLines = 2,
+                            fontSize = 12.sp
                         )
                     }
 
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = { vm.setReview(edit.id, ReviewState.FOLLOW_UP) }
-                    ) { Text("متابعة") }
+                    FilledIconButton(
+                        onClick = { vm.setReview(edit.id, ReviewState.FOLLOW_UP) },
+                        modifier = Modifier.size(42.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = Bad,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Icon(Icons.Rounded.Schedule, "متابعة", modifier = Modifier.size(19.dp))
+                    }
                 }
 
                 if (edit.reviewState == ReviewState.REVIEWED) {
