@@ -269,6 +269,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun deleteAirline(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val deleted = db.deleteAirline(id)
+            _airlines.value = db.airlines()
+            _message.value = if (deleted) "تم حذف شركة الطيران من القائمة" else "تعذر حذف شركة الطيران"
+        }
+    }
+
     fun setPassengerBaseFare(txId: String, passengerId: String, baseFare: Double?) {
         viewModelScope.launch(Dispatchers.IO) {
             db.setPassengerBaseFare(txId, passengerId, baseFare)
