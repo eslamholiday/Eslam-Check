@@ -1223,7 +1223,13 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     fun deletedPassengerLinks(limit: Int = 200): List<DeletedPassengerLink> {
         val out = mutableListOf<DeletedPassengerLink>()
         readableDatabase.rawQuery(
-            "SELECT * FROM deleted_tx_passengers ORDER BY deleted_at DESC LIMIT ?",
+            """
+                SELECT d.*, t.type AS tx_type, t.transaction_date AS tx_date
+                FROM deleted_tx_passengers d
+                LEFT JOIN transactions t ON t.id=d.tx_id
+                ORDER BY d.deleted_at DESC
+                LIMIT ?
+            """.trimIndent(),
             arrayOf(limit.toString())
         ).use { c ->
             while (c.moveToNext()) {
@@ -1242,6 +1248,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                     documentNo = c.sn("document_no"),
                     product = c.sn("product"),
                     flags = c.sn("flags"),
+                    txType = c.sn("tx_type")?.let { runCatching { TxType.valueOf(it) }.getOrNull() },
+                    transactionDate = c.sn("tx_date"),
                     deletedAt = c.l("deleted_at")
                 )
             }
@@ -1297,6 +1305,38 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         }
         audit("transaction", tx.id, "restore_passenger_link", passenger.name + "|" + (tx.operationNo ?: tx.id))
         return true
+    }
+
+    fun restoreDeletedPassengerLinksForOperation(id: String): Int {
+        val scope = readableDatabase.rawQuery(
+            "SELECT tx_id,currency,operation_no FROM deleted_tx_passengers WHERE id=? LIMIT 1",
+            arrayOf(id)
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null
+            else Triple(
+                cursor.getString(0),
+                cursor.getString(1),
+                if (cursor.isNull(2)) null else cursor.getString(2)
+            )
+        } ?: return 0
+
+        val ids = mutableListOf<String>()
+        if (!scope.third.isNullOrBlank()) {
+            readableDatabase.rawQuery(
+                "SELECT id FROM deleted_tx_passengers WHERE currency=? AND operation_no=?",
+                arrayOf(scope.second, scope.third)
+            ).use { cursor ->
+                while (cursor.moveToNext()) ids += cursor.getString(0)
+            }
+        } else {
+            readableDatabase.rawQuery(
+                "SELECT id FROM deleted_tx_passengers WHERE tx_id=?",
+                arrayOf(scope.first)
+            ).use { cursor ->
+                while (cursor.moveToNext()) ids += cursor.getString(0)
+            }
+        }
+        return ids.count { restoreDeletedPassengerLink(it) }
     }
 
     fun markReview(id: String, state: ReviewState) {
