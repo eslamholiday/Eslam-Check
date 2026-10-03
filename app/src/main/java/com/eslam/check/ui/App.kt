@@ -79,6 +79,7 @@ fun EslamCheckApp(vm: MainViewModel) {
         var tab by remember { mutableStateOf(MainTab.HOME) }
         var manualOpen by remember { mutableStateOf(false) }
         var detailId by remember { mutableStateOf<String?>(null) }
+        var detailNavigationIds by remember { mutableStateOf<List<String>>(emptyList()) }
         var calculatorOpen by remember { mutableStateOf(false) }
 
         LaunchedEffect(message) {
@@ -116,10 +117,22 @@ fun EslamCheckApp(vm: MainViewModel) {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (tab) {
-                    MainTab.HOME -> DashboardScreen(vm, { tab = MainTab.REVIEW }) { detailId = it }
-                    MainTab.REVIEW -> ReviewScreen(vm) { detailId = it }
-                    MainTab.PASSENGERS -> PassengersScreen(vm) { detailId = it }
-                    MainTab.PAYMENTS -> PaymentsScreen(vm) { detailId = it }
+                    MainTab.HOME -> DashboardScreen(vm, { tab = MainTab.REVIEW }) {
+                        detailNavigationIds = emptyList()
+                        detailId = it
+                    }
+                    MainTab.REVIEW -> ReviewScreen(vm) { id, queue ->
+                        detailNavigationIds = queue
+                        detailId = id
+                    }
+                    MainTab.PASSENGERS -> PassengersScreen(vm) {
+                        detailNavigationIds = emptyList()
+                        detailId = it
+                    }
+                    MainTab.PAYMENTS -> PaymentsScreen(vm) {
+                        detailNavigationIds = emptyList()
+                        detailId = it
+                    }
                     MainTab.MORE -> MoreScreen(vm)
                 }
 
@@ -154,7 +167,12 @@ fun EslamCheckApp(vm: MainViewModel) {
         }
         detailId?.let { id ->
             key(id) {
-                TransactionDetailDialog(vm, id, onDismiss = { detailId = null }) { next ->
+                TransactionDetailDialog(
+                    vm = vm,
+                    id = id,
+                    navigationIds = detailNavigationIds,
+                    onDismiss = { detailId = null }
+                ) { next ->
                     detailId = next
                 }
             }
@@ -351,7 +369,7 @@ private fun StatCard(title: String, value: Int, modifier: Modifier, onClick: () 
 }
 
 @Composable
-private fun ReviewScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
+private fun ReviewScreen(vm: MainViewModel, onDetail: (String, List<String>) -> Unit) {
     val all by vm.transactions.collectAsState()
     var search by remember { mutableStateOf("") }
     var typeFilter by remember { mutableStateOf<Set<TxType>>(emptySet()) }
@@ -435,7 +453,14 @@ private fun ReviewScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
         Text("${filtered.size} عملية", color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(filtered, key = { it.id }) { tx ->
-                TransactionCard(vm, tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
+                TransactionCard(
+                    vm = vm,
+                    tx = tx,
+                    onDetail = { onDetail(tx.id, filtered.map { it.id }) },
+                    onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) },
+                    onUndoReview = { vm.setReview(tx.id, ReviewState.UNREVIEWED) },
+                    showUndoReview = statusFilter == "REVIEWED"
+                )
             }
         }
     }
