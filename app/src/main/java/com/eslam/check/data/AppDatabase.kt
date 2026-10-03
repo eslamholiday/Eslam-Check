@@ -8,7 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 8) {
+class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 9) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE transactions(
@@ -203,6 +203,20 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 updated_at INTEGER NOT NULL
             )
         """.trimIndent())
+
+        db.execSQL("""
+            CREATE TABLE visa_price_rules(
+                id TEXT PRIMARY KEY,
+                country TEXT NOT NULL,
+                visa_type TEXT,
+                price REAL,
+                currency TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                note TEXT,
+                updated_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_visa_price_country ON visa_price_rules(country, currency, active)")
 
         db.execSQL("""
             CREATE TABLE settings(
@@ -450,6 +464,66 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         if (oldVersion < 8) {
             db.execSQL("ALTER TABLE passengers ADD COLUMN rating INTEGER NOT NULL DEFAULT 0")
         }
+        if (oldVersion < 9) {
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS visa_price_rules(
+                    id TEXT PRIMARY KEY,
+                    country TEXT NOT NULL,
+                    visa_type TEXT,
+                    price REAL,
+                    currency TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    note TEXT,
+                    updated_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_visa_price_country ON visa_price_rules(country, currency, active)")
+            seedVisaCountries(db)
+
+            db.rawQuery("SELECT id,phone FROM passengers WHERE phone IS NOT NULL AND phone<>''", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val id = cursor.getString(0)
+                    val oldPhone = cursor.getString(1)
+                    val normalized = normalizeIraqPhoneOrNull(oldPhone)
+                    if (normalized != null && normalized != oldPhone) {
+                        db.update("passengers", ContentValues().apply { put("phone", normalized) }, "id=?", arrayOf(id))
+                    }
+                }
+            }
+            db.rawQuery("SELECT id,phone FROM responsible_contacts WHERE phone IS NOT NULL AND phone<>''", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val id = cursor.getString(0)
+                    val oldPhone = cursor.getString(1)
+                    val normalized = normalizeIraqPhoneOrNull(oldPhone)
+                    if (normalized != null && normalized != oldPhone) {
+                        db.update("responsible_contacts", ContentValues().apply { put("phone", normalized) }, "id=?", arrayOf(id))
+                    }
+                }
+            }
+            listOf("issuer_whatsapp", "accountant_whatsapp").forEach { key ->
+                val oldValue = db.rawQuery("SELECT value FROM settings WHERE key=?", arrayOf(key)).use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                }
+                normalizeIraqPhoneOrNull(oldValue)?.let { normalized ->
+                    db.insertWithOnConflict("settings", null, ContentValues().apply {
+                        put("key", key)
+                        put("value", normalized)
+                    }, SQLiteDatabase.CONFLICT_REPLACE)
+                }
+            }
+            db.rawQuery("SELECT id,value FROM passenger_aliases WHERE kind='PHONE'", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val id = cursor.getString(0)
+                    val oldValue = cursor.getString(1)
+                    normalizeIraqPhoneOrNull(oldValue)?.let { normalized ->
+                        db.update("passenger_aliases", ContentValues().apply {
+                            put("value", normalized)
+                            put("normalized_value", normalized)
+                        }, "id=?", arrayOf(id))
+                    }
+                }
+            }
+        }
     }
 
     private fun seedDefaults(db: SQLiteDatabase) {
@@ -480,6 +554,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         putSetting(db, "color_payment", "#56CCF2")
         putSetting(db, "color_unknown", "#6A4C93")
         seedAirlines(db)
+        seedVisaCountries(db)
 
         val defaults = listOf(
             CommissionRule(UUID.randomUUID().toString(), "Iraqi Airways", RuleKind.PRIVATE_MANUAL, 0.0, note = "النسبة على Base Fare وتتغير حسب القاعدة/الفترة؛ تذاكر كشف IQD تُصنف عراقية تلقائيًا"),
@@ -544,6 +619,27 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         }
     }
 
+    private fun seedVisaCountries(db: SQLiteDatabase) {
+        val now = System.currentTimeMillis()
+        listOf(
+            "UAE" to "الإمارات",
+            "JORDAN" to "الأردن",
+            "EGYPT" to "مصر",
+            "SAUDI" to "السعودية"
+        ).forEach { (country, label) ->
+            db.insertWithOnConflict("visa_price_rules", null, ContentValues().apply {
+                put("id", "VISA-" + country + "-DEFAULT-USD")
+                put("country", country)
+                putNull("visa_type")
+                putNull("price")
+                put("currency", Currency.USD.name)
+                put("active", 1)
+                put("note", label + " • أدخل السعر الحالي يدويًا")
+                put("updated_at", now)
+            }, SQLiteDatabase.CONFLICT_IGNORE)
+        }
+    }
+
     private fun insertRule(db: SQLiteDatabase, rule: CommissionRule) {
         db.insert("commission_rules", null, ContentValues().apply {
             put("id", rule.id); put("airline", rule.airline); put("kind", rule.kind.name)
@@ -552,6 +648,71 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             put("learned", if (rule.learned) 1 else 0); put("active", if (rule.active) 1 else 0)
             put("note", rule.note); put("updated_at", rule.updatedAt)
         })
+    }
+
+    fun visaPriceRules(): List<VisaPriceRule> {
+        val out = mutableListOf<VisaPriceRule>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM visa_price_rules ORDER BY active DESC, country, COALESCE(visa_type,''), currency",
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += VisaPriceRule(
+                    id = cursor.s("id"),
+                    country = cursor.s("country"),
+                    visaType = cursor.sn("visa_type"),
+                    price = cursor.dn("price"),
+                    currency = Currency.valueOf(cursor.s("currency")),
+                    active = cursor.i("active") == 1,
+                    note = cursor.sn("note"),
+                    updatedAt = cursor.l("updated_at")
+                )
+            }
+        }
+        return out
+    }
+
+    fun saveVisaPriceRule(rule: VisaPriceRule): VisaPriceRule {
+        val country = canonicalVisaCountry(rule.country)
+        val cleanType = rule.visaType?.trim()?.takeIf { it.isNotBlank() }
+        val saved = rule.copy(
+            id = rule.id.ifBlank { UUID.randomUUID().toString() },
+            country = country,
+            visaType = cleanType,
+            price = rule.price?.takeIf { it >= 0.0 },
+            updatedAt = System.currentTimeMillis()
+        )
+        writableDatabase.insertWithOnConflict("visa_price_rules", null, ContentValues().apply {
+            put("id", saved.id)
+            put("country", saved.country)
+            put("visa_type", saved.visaType)
+            put("price", saved.price)
+            put("currency", saved.currency.name)
+            put("active", if (saved.active) 1 else 0)
+            put("note", saved.note)
+            put("updated_at", saved.updatedAt)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+        audit("visa_price", saved.id, "save", saved.country + "|" + (saved.visaType ?: "DEFAULT") + "|" + (saved.price?.toString() ?: "EMPTY"))
+        return saved
+    }
+
+    fun visaPriceFor(country: String?, visaType: String?, currency: Currency): VisaPriceRule? {
+        val canonical = country?.takeIf { it.isNotBlank() }?.let(::canonicalVisaCountry) ?: return null
+        val type = visaType?.trim().orEmpty()
+        val rules = visaPriceRules().filter { it.active && it.country.equals(canonical, true) && it.currency == currency && it.price != null }
+        return rules.firstOrNull { !it.visaType.isNullOrBlank() && type.contains(it.visaType!!, true) }
+            ?: rules.firstOrNull { it.visaType.isNullOrBlank() }
+    }
+
+    fun canonicalVisaCountry(value: String): String {
+        val p = value.trim().uppercase()
+        return when {
+            "UAE" in p || "EMIRAT" in p || "الامارات" in value || "الإمارات" in value -> "UAE"
+            "JORDAN" in p || "الاردن" in value || "الأردن" in value -> "JORDAN"
+            "EGYPT" in p || "مصر" in value -> "EGYPT"
+            "SAUDI" in p || "السعود" in value -> "SAUDI"
+            else -> value.trim().uppercase()
+        }
     }
 
     fun setting(key: String, default: String = ""): String {
@@ -1244,7 +1405,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     )
 
     private fun normalizeAliasValue(kind: String, value: String): String = when (kind.uppercase()) {
-        "PHONE" -> value.filter(Char::isDigit)
+        "PHONE" -> normalizeIraqPhoneOrNull(value) ?: value.filter(Char::isDigit)
         "PASSPORT" -> value.uppercase().replace(Regex("[^A-Z0-9]"), "")
         else -> normalize(value)
     }
@@ -1562,7 +1723,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             put("name", person.name.trim())
             put("normalized_name", normalize(person.name))
             put("passport", person.passport)
-            put("phone", person.phone)
+            put("phone", normalizeIraqPhoneForStorage(person.phone))
             put("responsible_id", responsibleId)
             put("responsible_relation", person.responsibleRelation)
             put("is_responsible", if (person.isResponsible) 1 else 0)
@@ -1571,7 +1732,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
 
         addAlias(writableDatabase, canonicalId, "NAME", person.name, canonicalId)
         addAlias(writableDatabase, canonicalId, "PASSPORT", person.passport, canonicalId)
-        addAlias(writableDatabase, canonicalId, "PHONE", person.phone, canonicalId)
+        addAlias(writableDatabase, canonicalId, "PHONE", normalizeIraqPhoneForStorage(person.phone), canonicalId)
         audit("passenger", canonicalId, "edit", person.name)
     }
 
@@ -2051,14 +2212,9 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         }
 
     private fun visaCountryFromProduct(product: String?): String? {
-        val p = product.orEmpty().uppercase()
-        return when {
-            "UAE" in p || "الامارات" in p || "الإمارات" in p -> "UAE"
-            "JORDAN" in p || "الاردن" in p || "الأردن" in p -> "JORDAN"
-            "EGYPT" in p || "مصر" in p -> "EGYPT"
-            "SAUDI" in p || "السعود" in p -> "SAUDI"
-            else -> null
-        }
+        val raw = product.orEmpty()
+        val canonical = canonicalVisaCountry(raw)
+        return canonical.takeIf { it in setOf("UAE", "JORDAN", "EGYPT", "SAUDI") }
     }
 
     private fun Cursor.s(col: String) = getString(getColumnIndexOrThrow(col))
