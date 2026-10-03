@@ -132,6 +132,8 @@ data class DeletedPassengerLink(
     val documentNo: String? = null,
     val product: String? = null,
     val flags: String? = null,
+    val txType: TxType? = null,
+    val transactionDate: String? = null,
     val deletedAt: Long = System.currentTimeMillis()
 )
 
