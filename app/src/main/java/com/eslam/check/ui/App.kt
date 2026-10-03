@@ -2596,26 +2596,65 @@ private fun TransactionDetailDialog(
                                 shape = RoundedCornerShape(16.dp),
                                 color = if (commission.isWithinTolerance) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
                             ) {
-                                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Text("نتيجة مراجعة العمولة", fontWeight = FontWeight.Bold)
-                                    if (rule == null) {
-                                        Text("اختر شركة الطيران ثم حدد قاعدة العمولة.", color = Mystery)
-                                    } else {
-                                        Text(ruleLabel(rule))
-                                        if (!rule.effectiveFrom.isNullOrBlank()) Text("سارية من " + rule.effectiveFrom, fontSize = 12.sp)
-                                        rule.note?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+
+                                    when {
+                                        commission.inferredFromDiscount -> {
+                                            Text("استنتاج من Discount لعدم وجود قاعدة رقمية ثابتة", color = MaterialTheme.colorScheme.primary)
+                                            commission.inferredRate?.let {
+                                                Text("النسبة المستنتجة: " + String.format("%.2f", it) + "%", fontWeight = FontWeight.SemiBold)
+                                            }
+                                        }
+                                        rule == null -> {
+                                            Text("لا توجد قاعدة عمولة رقمية محفوظة.", color = Mystery)
+                                        }
+                                        else -> {
+                                            Text(ruleLabel(rule))
+                                            if (!rule.effectiveFrom.isNullOrBlank()) Text("سارية من " + rule.effectiveFrom, fontSize = 12.sp)
+                                            rule.note?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                        }
                                     }
-                                    commission.expectedCommission?.let {
+
+                                    commission.rows.mapNotNull { row ->
+                                        val amount = row.expectedCommission ?: return@mapNotNull null
+                                        val name = details.firstOrNull { it.passenger.id == row.passengerId }?.passenger?.name ?: return@mapNotNull null
+                                        name to amount
+                                    }.forEach { (name, amount) ->
                                         Text(
-                                            if (rule?.kind == RuleKind.FIXED_PER_PASSENGER) "رسم الإصدار المتوقع: " + formatMoney(it, edit.currency)
-                                            else "العمولة المتوقعة: " + formatMoney(it, edit.currency)
+                                            name + ": " + formatMoney(amount, edit.currency),
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
+
+                                    commission.expectedCommission?.let {
+                                        Text(
+                                            when {
+                                                commission.inferredFromDiscount -> "العمولة المستنتجة الكلية: " + formatMoney(it, edit.currency)
+                                                rule?.kind == RuleKind.FIXED_PER_PASSENGER -> "رسم الإصدار المتوقع الكلي: " + formatMoney(it, edit.currency)
+                                                else -> "العمولة المتوقعة الكلية: " + formatMoney(it, edit.currency)
+                                            },
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+
+                                    Text(
+                                        "Discount الفعلي: " + formatMoney(edit.discount, edit.currency),
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+
+                                    if (!commission.inferredFromDiscount) {
+                                        commission.difference?.let {
+                                            Text("الفرق: " + formatMoney(kotlin.math.abs(it), edit.currency))
+                                        }
+                                    }
                                     commission.expectedSettlement?.let { Text("التسديد المتوقع: " + formatMoney(it, edit.currency)) }
-                                    commission.difference?.let { Text("الفرق: " + formatMoney(it, edit.currency)) }
+
                                     Text(
                                         commission.explanation,
                                         color = when {
+                                            commission.inferredFromDiscount -> MaterialTheme.colorScheme.primary
                                             commission.isWithinTolerance -> Good
                                             commission.needsInput -> Warn
                                             else -> Bad
