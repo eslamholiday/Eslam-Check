@@ -887,8 +887,12 @@ private fun PassengerDetailDialog(
     var responsiblePicker by remember { mutableStateOf(false) }
     var dependentPicker by remember { mutableStateOf(false) }
     var unmergeTarget by remember { mutableStateOf<Passenger?>(null) }
+    var deleteAliasTarget by remember { mutableStateOf<PassengerAlias?>(null) }
+    var pendingProfileResponsible by remember { mutableStateOf<Passenger?>(null) }
+    var profileResponsibilityConflicts by remember { mutableStateOf<List<Passenger>>(emptyList()) }
+    var forceProfileResponsibility by remember { mutableStateOf(false) }
     var files by remember(passenger.id) { mutableStateOf(vm.passengerFiles(passenger.id)) }
-    val aliases = vm.passengerAliases(passenger.id)
+    var aliases by remember(passenger.id) { mutableStateOf(vm.passengerAliases(passenger.id)) }
     val mergedRecords = vm.mergedPassengers(passenger.id)
     val dependents = vm.dependentsOf(passenger.id)
     val currentResponsible = edit.responsibleId?.let { id -> vm.passengerById(id) }
@@ -1012,7 +1016,7 @@ private fun PassengerDetailDialog(
                                     Column(Modifier.weight(1f)) {
                                         Text("هوية الشخص والأسماء البديلة", fontWeight = FontWeight.Bold)
                                         Text(
-                                            "أي اسم مدمج سابقًا يبقى معروفًا ويذهب تلقائيًا إلى هذا الملف عند الاستيراد.",
+                                            "الأسماء البديلة تربط الاستيرادات بهذا الملف، ويمكن حذف ارتباط اسم منفرد بدون فك السجلات المدمجة.",
                                             fontSize = 12.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -1020,22 +1024,40 @@ private fun PassengerDetailDialog(
                                 }
                                 val nameAliases = aliases
                                     .filter { it.kind == "NAME" }
-                                    .map { it.value }
-                                    .filter { !it.equals(edit.name, true) }
-                                    .distinctBy { it.lowercase() }
+                                    .filter { !it.value.equals(edit.name, true) }
+                                    .distinctBy { it.normalizedValue }
                                 if (nameAliases.isEmpty()) {
                                     Text("لا توجد أسماء بديلة بعد", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 } else {
-                                    Row(
-                                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         nameAliases.forEach { alias ->
-                                            AssistChip(
-                                                onClick = { copyToClipboard(context, "Alias", alias) },
-                                                label = { Text(alias) },
-                                                leadingIcon = { Icon(Icons.Rounded.Link, null, modifier = Modifier.size(16.dp)) }
-                                            )
+                                            Surface(
+                                                shape = RoundedCornerShape(12.dp),
+                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                            ) {
+                                                Row(
+                                                    Modifier.fillMaxWidth().padding(start = 10.dp, top = 3.dp, bottom = 3.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Icon(Icons.Rounded.Link, null, modifier = Modifier.size(16.dp))
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text(
+                                                        alias.value,
+                                                        Modifier.weight(1f).clickable { copyToClipboard(context, "Alias", alias.value) }
+                                                    )
+                                                    IconButton(
+                                                        onClick = { deleteAliasTarget = alias },
+                                                        modifier = Modifier.size(34.dp)
+                                                    ) {
+                                                        Icon(
+                                                            Icons.Rounded.Close,
+                                                            "حذف الاسم البديل",
+                                                            tint = MaterialTheme.colorScheme.error,
+                                                            modifier = Modifier.size(17.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1183,7 +1205,7 @@ private fun PassengerDetailDialog(
                     onClick = {
                         vm.updatePassenger(edit)
                         if (edit.responsibleId != passenger.responsibleId || edit.responsibleRelation != passenger.responsibleRelation) {
-                            vm.assignResponsible(edit.id, edit.responsibleId, edit.responsibleRelation)
+                            vm.assignResponsible(edit.id, edit.responsibleId, edit.responsibleRelation, forceProfileResponsibility)
                         }
                         onDismiss()
                     }
@@ -1210,8 +1232,16 @@ private fun PassengerDetailDialog(
                     }
                     items(allPassengers.filter { it.isResponsible && it.id != edit.id }, key = { it.id }) { p ->
                         TextButton(onClick = {
-                            edit = edit.copy(responsibleId = p.id)
-                            responsiblePicker = false
+                            val conflicts = vm.responsibilityConflictsForPassenger(edit.id, p.id)
+                            if (conflicts.isEmpty()) {
+                                edit = edit.copy(responsibleId = p.id)
+                                forceProfileResponsibility = false
+                                responsiblePicker = false
+                            } else {
+                                pendingProfileResponsible = p
+                                profileResponsibilityConflicts = conflicts
+                                responsiblePicker = false
+                            }
                         }) { Text(p.name) }
                     }
                 }
@@ -1228,6 +1258,70 @@ private fun PassengerDetailDialog(
             onConfirm = { ids ->
                 ids.forEach { vm.assignResponsible(it, edit.id) }
                 dependentPicker = false
+            }
+        )
+    }
+
+    deleteAliasTarget?.let { alias ->
+        AlertDialog(
+            onDismissRequest = { deleteAliasTarget = null },
+            title = { Text("حذف الاسم من هوية الشخص") },
+            text = {
+                Text(
+                    "سيتم حذف ارتباط «" + alias.value + "» من الأسماء البديلة فقط. لن تُحذف العمليات ولن يتم فك أي سجل مدمج."
+                )
+            },
+            confirmButton = {
+                Button(
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    onClick = {
+                        if (vm.deletePassengerAliasImmediate(alias.id)) {
+                            aliases = vm.passengerAliases(passenger.id)
+                        }
+                        deleteAliasTarget = null
+                    }
+                ) {
+                    Icon(Icons.Rounded.DeleteOutline, null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("حذف الارتباط")
+                }
+            },
+            dismissButton = { TextButton(onClick = { deleteAliasTarget = null }) { Text("إلغاء") } }
+        )
+    }
+
+    pendingProfileResponsible?.let { selected ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingProfileResponsible = null
+                profileResponsibilityConflicts = emptyList()
+            },
+            title = { Text("يوجد مسؤول مختلف") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("بعض المسافرين المرتبطين بهذه المجموعة لديهم مسؤول آخر:")
+                    profileResponsibilityConflicts.take(8).forEach { conflict ->
+                        Text("• " + conflict.name, fontSize = 13.sp)
+                    }
+                    Text(
+                        "اعتماد «" + selected.name + "» سينقل المجموعة المترابطة إليه.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    edit = edit.copy(responsibleId = selected.id)
+                    forceProfileResponsibility = true
+                    pendingProfileResponsible = null
+                    profileResponsibilityConflicts = emptyList()
+                }) { Text("اعتماد المسؤول الجديد") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingProfileResponsible = null
+                    profileResponsibilityConflicts = emptyList()
+                }) { Text("إلغاء") }
             }
         )
     }
@@ -1373,7 +1467,8 @@ private fun MoreScreen(vm: MainViewModel) {
             title = "المسافرون والمسؤولون",
             items = listOf(
                 "المسؤول يبقى مسافرًا بنفس ID",
-                "اختيار مسؤول من داخل PNR يضم بقية المسافرين تحته",
+                "يمكن اختيار المسؤول من مسافري العملية أو من المسؤولين الحاليين",
+                "المسؤول يمتد تلقائيًا إلى المسافرين المترابطين عبر العمليات المشتركة مع تنبيه عند التعارض",
                 "يمكن دمج مسافرين واختيار سجل رئيسي واحد مع الاحتفاظ بالأسماء البديلة",
                 "الاستيراد المستقبلي بأي اسم مدمج يعود تلقائيًا إلى السجل الرئيسي",
                 "يمكن فك الدمج لاحقًا بدون حذف العمليات الأصلية",
@@ -2450,9 +2545,14 @@ private fun TransactionDetailDialog(
     var airlinePicker by remember { mutableStateOf(false) }
     var commissionEditor by remember { mutableStateOf(false) }
     var responsiblePicker by remember { mutableStateOf(false) }
+    var responsiblePickerTab by remember { mutableStateOf("OPERATION") }
+    var responsibleSearch by remember { mutableStateOf("") }
+    var pendingResponsible by remember { mutableStateOf<Passenger?>(null) }
+    var responsibilityConflicts by remember { mutableStateOf<List<Passenger>>(emptyList()) }
     var selectedPassenger by remember { mutableStateOf<Passenger?>(null) }
     var rawOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
+    var reviewSaving by remember(id) { mutableStateOf(false) }
     var attachments by remember(id) { mutableStateOf(vm.transactionAttachments(id)) }
     var receiptPreview by remember { mutableStateOf<TransactionAttachment?>(null) }
     var replaceAttachmentId by remember { mutableStateOf<String?>(null) }
@@ -2665,11 +2765,11 @@ private fun TransactionDetailDialog(
                                     Text("المسافرون داخل PNR", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                                     Text("Base Fare لكل مسافر → Taxes → العمولة المتوقعة → المقارنة مع Discount.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                if (details.size > 1 && responsible == null) {
+                                if (details.isNotEmpty()) {
                                     TextButton(onClick = { responsiblePicker = true }) {
                                         Icon(Icons.Rounded.SupervisorAccount, null)
                                         Spacer(Modifier.width(3.dp))
-                                        Text("تحديد مسؤول")
+                                        Text(if (responsible == null) "تحديد مسؤول" else "تغيير المسؤول")
                                     }
                                 }
                             }
@@ -2724,7 +2824,8 @@ private fun TransactionDetailDialog(
 
                                     commission.rows.mapNotNull { row ->
                                         val amount = row.expectedCommission ?: return@mapNotNull null
-                                        val name = details.firstOrNull { it.passenger.id == row.passengerId }?.passenger?.name ?: return@mapNotNull null
+                                        val detail = details.firstOrNull { it.passenger.id == row.passengerId } ?: return@mapNotNull null
+                                        val name = detail.sourceName ?: detail.passenger.name
                                         name to amount
                                     }.forEach { (name, amount) ->
                                         Text(
@@ -2784,13 +2885,13 @@ private fun TransactionDetailDialog(
                                     details.forEach { d ->
                                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                             Text(
-                                                d.passenger.name,
+                                                d.sourceName ?: d.passenger.name,
                                                 Modifier.weight(1f).clickable { selectedPassenger = d.passenger },
                                                 color = MaterialTheme.colorScheme.primary,
                                                 fontWeight = FontWeight.SemiBold
                                             )
                                             d.amount?.let { Text(formatMoney(it, edit.currency)) }
-                                            IconButton(onClick = { copyToClipboard(context, "الاسم", d.passenger.name) }, modifier = Modifier.size(30.dp)) {
+                                            IconButton(onClick = { copyToClipboard(context, "الاسم", d.sourceName ?: d.passenger.name) }, modifier = Modifier.size(30.dp)) {
                                                 Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
                                             }
                                             IconButton(
@@ -2801,11 +2902,11 @@ private fun TransactionDetailDialog(
                                             }
                                         }
                                     }
-                                    if (details.size > 1 && responsible == null) {
+                                    if (details.isNotEmpty()) {
                                         OutlinedButton(onClick = { responsiblePicker = true }, modifier = Modifier.fillMaxWidth()) {
                                             Icon(Icons.Rounded.SupervisorAccount, null)
                                             Spacer(Modifier.width(5.dp))
-                                            Text("تعيين مسؤول لهذه المعاملة")
+                                            Text(if (responsible == null) "تعيين مسؤول لهذه المعاملة" else "تغيير المسؤول")
                                         }
                                     }
                                 }
@@ -2828,14 +2929,14 @@ private fun TransactionDetailDialog(
                                     details.forEach { d ->
                                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                             Text(
-                                                d.passenger.name,
+                                                d.sourceName ?: d.passenger.name,
                                                 Modifier.weight(1f).clickable { selectedPassenger = d.passenger },
                                                 color = MaterialTheme.colorScheme.primary,
                                                 fontWeight = FontWeight.SemiBold
                                             )
                                             d.documentNo?.let { Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                                             IconButton(
-                                                onClick = { copyToClipboard(context, "الاسم", d.passenger.name) },
+                                                onClick = { copyToClipboard(context, "الاسم", d.sourceName ?: d.passenger.name) },
                                                 modifier = Modifier.size(30.dp)
                                             ) {
                                                 Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
@@ -2847,6 +2948,14 @@ private fun TransactionDetailDialog(
                                                 Icon(Icons.Rounded.PersonRemove, "حذف الارتباط", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
                                             }
                                         }
+                                    }
+                                    OutlinedButton(
+                                        onClick = { responsiblePicker = true },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(Icons.Rounded.SupervisorAccount, null)
+                                        Spacer(Modifier.width(5.dp))
+                                        Text(if (responsible == null) "تحديد المسؤول" else "تغيير المسؤول")
                                     }
                                 }
                             }
@@ -3148,17 +3257,25 @@ private fun TransactionDetailDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         modifier = Modifier.weight(1f),
+                        enabled = !reviewSaving,
                         onClick = {
-                            vm.updateTransaction(edit)
-                            if (edit.airline != tx.airline) vm.setAirline(edit.id, edit.airline)
-                            if (edit.reviewState != ReviewState.REVIEWED) {
-                                vm.setReview(edit.id, ReviewState.REVIEWED)
+                            reviewSaving = true
+                            val reviewedEdit = edit.copy(reviewState = ReviewState.REVIEWED)
+                            vm.saveAndReview(reviewedEdit) { success ->
+                                reviewSaving = false
+                                if (success) {
+                                    edit = reviewedEdit
+                                    val target = if (navigationIds.isNotEmpty()) smartNextId else reviewNextId
+                                    if (target != null) onNext(target) else onDismiss()
+                                }
                             }
-                            val target = if (navigationIds.isNotEmpty()) smartNextId else reviewNextId
-                            if (target != null) onNext(target) else onDismiss()
                         }
                     ) {
-                        Icon(Icons.Rounded.CheckCircle, null)
+                        if (reviewSaving) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Rounded.CheckCircle, null)
+                        }
                         Spacer(Modifier.width(4.dp))
                         Text(if (edit.reviewState == ReviewState.REVIEWED) "مراجع" else "صح")
                     }
@@ -3220,30 +3337,102 @@ private fun TransactionDetailDialog(
 
     if (responsiblePicker) {
         AlertDialog(
-            onDismissRequest = { responsiblePicker = false },
+            onDismissRequest = {
+                responsiblePicker = false
+                responsibleSearch = ""
+            },
             title = { Text("تحديد المسؤول") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        if (!edit.pnr.isNullOrBlank()) "اختيار أحد مسافري PNR سيضم بقية المسافرين تحته تلقائيًا."
-                        else "اختيار مسؤول سيضم بقية الأشخاص في هذه العملية تحته.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "يمكن اختيار أحد مسافري العملية أو مسؤول محفوظ مسبقًا. المسؤول المختار يمتد تلقائيًا إلى المسافرين المترابطين عبر العمليات المشتركة.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
                     )
-                    LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                        items(pnrPassengers, key = { it.id }) { p ->
-                            TextButton(
-                                modifier = Modifier.fillMaxWidth(),
-                                onClick = {
-                                    if (!edit.pnr.isNullOrBlank()) vm.assignResponsibleForPnr(edit.pnr.orEmpty(), p.id)
-                                    else vm.assignResponsibleForTransaction(edit.id, p.id)
-                                    responsiblePicker = false
-                                }
-                            ) {
-                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Rounded.Person, null)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(p.name, Modifier.weight(1f))
-                                    if (!p.phone.isNullOrBlank()) Icon(Icons.Rounded.Chat, null, modifier = Modifier.size(16.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(
+                            selected = responsiblePickerTab == "OPERATION",
+                            onClick = { responsiblePickerTab = "OPERATION" },
+                            label = { Text("مسافرو العملية") }
+                        )
+                        FilterChip(
+                            selected = responsiblePickerTab == "EXISTING",
+                            onClick = { responsiblePickerTab = "EXISTING" },
+                            label = { Text("المسؤولون الحاليون") }
+                        )
+                    }
+
+                    if (responsiblePickerTab == "EXISTING") {
+                        OutlinedTextField(
+                            value = responsibleSearch,
+                            onValueChange = { responsibleSearch = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("بحث بالاسم أو الهاتف") },
+                            leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                            singleLine = true
+                        )
+                    }
+
+                    val candidates = if (responsiblePickerTab == "OPERATION") {
+                        pnrPassengers
+                    } else {
+                        allPassengers.filter { p ->
+                            p.isResponsible &&
+                                (responsibleSearch.isBlank() ||
+                                    p.name.contains(responsibleSearch, true) ||
+                                    p.phone.orEmpty().contains(responsibleSearch, true))
+                        }
+                    }
+
+                    if (candidates.isEmpty()) {
+                        Text(
+                            if (responsiblePickerTab == "EXISTING") "لا يوجد مسؤول مطابق للبحث." else "لا يوجد مسافرون للاختيار.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                            items(candidates.distinctBy { it.id }, key = { it.id }) { p ->
+                                TextButton(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onClick = {
+                                        val conflicts = if (!edit.pnr.isNullOrBlank()) {
+                                            vm.responsibilityConflictsForPnr(edit.pnr.orEmpty(), p.id)
+                                        } else {
+                                            vm.responsibilityConflictsForTransaction(edit.id, p.id)
+                                        }
+                                        if (conflicts.isEmpty()) {
+                                            if (!edit.pnr.isNullOrBlank()) {
+                                                vm.assignResponsibleForPnr(edit.pnr.orEmpty(), p.id)
+                                            } else {
+                                                vm.assignResponsibleForTransaction(edit.id, p.id)
+                                            }
+                                            responsiblePicker = false
+                                            responsibleSearch = ""
+                                        } else {
+                                            pendingResponsible = p
+                                            responsibilityConflicts = conflicts
+                                            responsiblePicker = false
+                                        }
+                                    }
+                                ) {
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            if (p.isResponsible) Icons.Rounded.SupervisorAccount else Icons.Rounded.Person,
+                                            null
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(p.name)
+                                            val info = listOfNotNull(
+                                                p.phone?.takeIf { it.isNotBlank() },
+                                                if (p.isResponsible) vm.dependentsOf(p.id).size.toString() + " تابع" else null
+                                            ).joinToString(" • ")
+                                            if (info.isNotBlank()) {
+                                                Text(info, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                        }
+                                        if (!p.phone.isNullOrBlank()) Icon(Icons.Rounded.Chat, null, modifier = Modifier.size(16.dp))
+                                    }
                                 }
                             }
                         }
@@ -3251,6 +3440,49 @@ private fun TransactionDetailDialog(
                 }
             },
             confirmButton = {}
+        )
+    }
+
+    pendingResponsible?.let { selected ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingResponsible = null
+                responsibilityConflicts = emptyList()
+            },
+            title = { Text("تعارض في المسؤول") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("هناك مسافرون ضمن المجموعة المترابطة يتبعون مسؤولًا مختلفًا:")
+                    responsibilityConflicts.take(10).forEach { conflict ->
+                        Text("• " + conflict.name, fontSize = 13.sp)
+                    }
+                    if (responsibilityConflicts.size > 10) {
+                        Text("و" + (responsibilityConflicts.size - 10) + " آخرون…", fontSize = 12.sp)
+                    }
+                    Text(
+                        "إذا اعتمدت «" + selected.name + "»، سيتم نقل المجموعة المترابطة إلى هذا المسؤول.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (!edit.pnr.isNullOrBlank()) {
+                        vm.assignResponsibleForPnr(edit.pnr.orEmpty(), selected.id, forceConflicts = true)
+                    } else {
+                        vm.assignResponsibleForTransaction(edit.id, selected.id, forceConflicts = true)
+                    }
+                    pendingResponsible = null
+                    responsibilityConflicts = emptyList()
+                    responsibleSearch = ""
+                }) { Text("اعتماد المسؤول الجديد") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingResponsible = null
+                    responsibilityConflicts = emptyList()
+                }) { Text("إلغاء") }
+            }
         )
     }
 
@@ -3463,13 +3695,13 @@ private fun PassengerAuditCard(
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    detail.passenger.name,
+                    detail.sourceName ?: detail.passenger.name,
                     modifier = Modifier.weight(1f).clickable { onOpenPassenger(detail.passenger) },
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
                 IconButton(
-                    onClick = { copyToClipboard(context, "الاسم", detail.passenger.name) },
+                    onClick = { copyToClipboard(context, "الاسم", detail.sourceName ?: detail.passenger.name) },
                     modifier = Modifier.size(30.dp)
                 ) {
                     Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))

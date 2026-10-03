@@ -8,7 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 6) {
+class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 7) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE transactions(
@@ -86,6 +86,17 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         db.execSQL("CREATE INDEX idx_passenger_alias_owner ON passenger_aliases(passenger_id)")
 
         db.execSQL("""
+            CREATE TABLE deleted_passenger_aliases(
+                id TEXT PRIMARY KEY,
+                passenger_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                normalized_value TEXT NOT NULL,
+                deleted_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE UNIQUE INDEX idx_deleted_alias_unique ON deleted_passenger_aliases(passenger_id, kind, normalized_value)")
+
+        db.execSQL("""
             CREATE TABLE passenger_files(
                 id TEXT PRIMARY KEY,
                 passenger_id TEXT NOT NULL,
@@ -145,6 +156,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             CREATE TABLE tx_passengers(
                 tx_id TEXT NOT NULL,
                 passenger_id TEXT NOT NULL,
+                source_name TEXT,
                 amount REAL,
                 base_fare REAL,
                 passenger_type TEXT,
@@ -361,6 +373,16 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             """.trimIndent())
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_passenger_alias_lookup ON passenger_aliases(kind, normalized_value)")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_passenger_alias_owner ON passenger_aliases(passenger_id)")
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS deleted_passenger_aliases(
+                    id TEXT PRIMARY KEY,
+                    passenger_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    normalized_value TEXT NOT NULL,
+                    deleted_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_deleted_alias_unique ON deleted_passenger_aliases(passenger_id, kind, normalized_value)")
             db.rawQuery("SELECT id,name,passport,phone FROM passengers", null).use { c ->
                 while (c.moveToNext()) {
                     val id = c.getString(0)
@@ -403,6 +425,26 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             """.trimIndent())
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_deleted_tx_pax_tx ON deleted_tx_passengers(tx_id)")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_deleted_tx_pax_key ON deleted_tx_passengers(currency, operation_no)")
+        }
+        if (oldVersion < 7) {
+            db.execSQL("ALTER TABLE tx_passengers ADD COLUMN source_name TEXT")
+            db.execSQL("""
+                UPDATE tx_passengers
+                SET source_name = (
+                    SELECT p.name FROM passengers p WHERE p.id = tx_passengers.passenger_id
+                )
+                WHERE source_name IS NULL OR source_name = ''
+            """.trimIndent())
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS deleted_passenger_aliases(
+                    id TEXT PRIMARY KEY,
+                    passenger_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    normalized_value TEXT NOT NULL,
+                    deleted_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_deleted_alias_unique ON deleted_passenger_aliases(passenger_id, kind, normalized_value)")
         }
     }
 
@@ -607,9 +649,10 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         parsedWithId.passengers.forEach { p ->
             val passenger = findOrCreatePassenger(p.name, p.passport)
             if (!isPassengerLinkDeleted(tx, passenger.id, p.name, p.passport)) {
-                linkPassenger(tx.id, passenger.id, p.amount, p.passengerType, p.documentNo, p.product, p.flags)
+                linkPassenger(tx.id, passenger.id, p.name, p.amount, p.passengerType, p.documentNo, p.product, p.flags)
             }
         }
+        propagateResponsibilityAfterImport(tx.id)
         audit(
             "transaction",
             tx.id,
@@ -639,7 +682,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         insertTransaction(writableDatabase, tx)
         passengerNames.filter { it.isNotBlank() }.forEach { name ->
             val p = findOrCreatePassenger(name, null)
-            linkPassenger(tx.id, p.id, null)
+            linkPassenger(tx.id, p.id, name, null)
         }
         audit("transaction", tx.id, "manual_add", "${tx.type} ${tx.pnr ?: ""}")
         return tx
@@ -691,12 +734,12 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         val where = mutableListOf<String>()
         val args = mutableListOf<String>()
         if (search.isNotBlank()) {
-            where += "(pnr LIKE ? OR operation_no LIKE ? OR airline LIKE ? OR visa_country LIKE ? OR note LIKE ? OR id IN (SELECT tp.tx_id FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id WHERE p.normalized_name LIKE ? OR p.passport LIKE ? OR p.phone LIKE ? OR tp.document_no LIKE ? OR p.id IN (SELECT passenger_id FROM passenger_aliases WHERE normalized_value LIKE ? OR normalized_value LIKE ?)))"
+            where += "(pnr LIKE ? OR operation_no LIKE ? OR airline LIKE ? OR visa_country LIKE ? OR note LIKE ? OR id IN (SELECT tp.tx_id FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id WHERE p.normalized_name LIKE ? OR p.passport LIKE ? OR p.phone LIKE ? OR tp.document_no LIKE ? OR tp.source_name LIKE ? OR p.id IN (SELECT passenger_id FROM passenger_aliases WHERE normalized_value LIKE ? OR normalized_value LIKE ?)))"
             val q = "%${normalize(search)}%"
             val raw = "%${search.trim()}%"
             val aliasToken = normalizeAliasValue("PASSPORT", search)
             val aliasRaw = if (aliasToken.isBlank()) "__NO_ALIAS_MATCH__" else "%$aliasToken%"
-            args += listOf(raw, raw, raw, raw, raw, q, raw, raw, raw, q, aliasRaw)
+            args += listOf(raw, raw, raw, raw, raw, q, raw, raw, raw, raw, q, aliasRaw)
         }
         if (types.isNotEmpty()) {
             where += "type IN (${types.joinToString(",") { "?" }})"
@@ -789,9 +832,9 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             ?: aliasOwner("NAME", normName)
             ?: readableDatabase.rawQuery(
                 if (passport.isNullOrBlank())
-                    "SELECT id FROM passengers WHERE normalized_name=? ORDER BY CASE WHEN merged_into_id IS NULL THEN 0 ELSE 1 END LIMIT 1"
+                    "SELECT id FROM passengers WHERE normalized_name=? AND merged_into_id IS NULL LIMIT 1"
                 else
-                    "SELECT id FROM passengers WHERE passport=? OR normalized_name=? ORDER BY CASE WHEN passport=? THEN 0 ELSE 1 END, CASE WHEN merged_into_id IS NULL THEN 0 ELSE 1 END LIMIT 1",
+                    "SELECT id FROM passengers WHERE passport=? OR (normalized_name=? AND merged_into_id IS NULL) ORDER BY CASE WHEN passport=? THEN 0 ELSE 1 END LIMIT 1",
                 if (passport.isNullOrBlank()) arrayOf(normName) else arrayOf(passport, normName, passport)
             ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
 
@@ -828,19 +871,33 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     private fun linkPassenger(
         txId: String,
         passengerId: String,
+        sourceName: String?,
         amount: Double?,
         passengerType: String? = null,
         documentNo: String? = null,
         product: String? = null,
         flags: String? = null
     ) {
-        val existingBase = readableDatabase.rawQuery(
-            "SELECT base_fare FROM tx_passengers WHERE tx_id=? AND passenger_id=?",
+        val existing = readableDatabase.rawQuery(
+            "SELECT base_fare,source_name FROM tx_passengers WHERE tx_id=? AND passenger_id=?",
             arrayOf(txId, passengerId)
-        ).use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getDouble(0) else null }
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null
+            else Pair(
+                if (cursor.isNull(0)) null else cursor.getDouble(0),
+                if (cursor.isNull(1)) null else cursor.getString(1)
+            )
+        }
         writableDatabase.insertWithOnConflict("tx_passengers", null, ContentValues().apply {
-            put("tx_id", txId); put("passenger_id", passengerId); put("amount", amount); put("base_fare", existingBase)
-            put("passenger_type", passengerType); put("document_no", documentNo); put("product", product); put("flags", flags)
+            put("tx_id", txId)
+            put("passenger_id", passengerId)
+            put("source_name", existing?.second ?: sourceName?.trim()?.takeIf { it.isNotBlank() })
+            put("amount", amount)
+            put("base_fare", existing?.first)
+            put("passenger_type", passengerType)
+            put("document_no", documentNo)
+            put("product", product)
+            put("flags", flags)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
@@ -891,7 +948,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         readableDatabase.rawQuery(
             """
                 SELECT tp.amount,tp.base_fare,tp.passenger_type,tp.document_no,tp.product,tp.flags,
-                       p.name,p.passport,tp.passenger_id
+                       COALESCE(tp.source_name,p.name),p.passport,tp.passenger_id
                 FROM tx_passengers tp
                 JOIN passengers p ON p.id=tp.passenger_id
                 WHERE tp.tx_id=? AND tp.passenger_id IN ($placeholders)
@@ -1024,6 +1081,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             linkPassenger(
                 tx.id,
                 passenger.id,
+                item.passengerName,
                 item.amount,
                 item.passengerType,
                 item.documentNo,
@@ -1048,6 +1106,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             put("review_state", state.name)
             if (state == ReviewState.REVIEWED) {
                 put("reviewed_at", System.currentTimeMillis())
+                put("changed_after_review", 0)
                 if (tx?.commissionRuleSnapshot.isNullOrBlank() && tx?.type == TxType.TICKET) {
                     ruleForTransaction(tx)?.let { put("commission_rule_snapshot", ruleSnapshot(it)) }
                 }
@@ -1055,6 +1114,29 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         }
         writableDatabase.update("transactions", values, "id=?", arrayOf(id))
         audit("transaction", id, "review", state.name)
+    }
+
+    fun saveAndMarkReviewed(tx: Transaction): Transaction {
+        val now = System.currentTimeMillis()
+        val snapshot = tx.commissionRuleSnapshot ?: if (tx.type == TxType.TICKET) {
+            ruleForTransaction(tx)?.let(::ruleSnapshot)
+        } else null
+        val reviewed = tx.copy(
+            reviewState = ReviewState.REVIEWED,
+            reviewedAt = now,
+            changedAfterReview = false,
+            commissionRuleSnapshot = snapshot
+        )
+        writableDatabase.beginTransaction()
+        try {
+            updateTransaction(writableDatabase, reviewed)
+            audit("transaction", reviewed.id, "edit", "manual edit + review")
+            audit("transaction", reviewed.id, "review", ReviewState.REVIEWED.name)
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        return transaction(reviewed.id) ?: reviewed
     }
 
     fun updateTransactionFields(tx: Transaction) {
@@ -1171,6 +1253,12 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         val clean = value?.trim()?.takeIf { it.isNotBlank() } ?: return
         val normalized = normalizeAliasValue(kind, clean)
         if (normalized.isBlank()) return
+        val rootPassengerId = try { resolveCanonicalPassengerId(passengerId) } catch (_: Exception) { passengerId }
+        val deleted = db.rawQuery(
+            "SELECT 1 FROM deleted_passenger_aliases WHERE passenger_id=? AND kind=? AND normalized_value=? LIMIT 1",
+            arrayOf(rootPassengerId, kind.uppercase(), normalized)
+        ).use { it.moveToFirst() }
+        if (deleted) return
         val exists = db.rawQuery(
             "SELECT 1 FROM passenger_aliases WHERE passenger_id=? AND kind=? AND normalized_value=? LIMIT 1",
             arrayOf(passengerId, kind.uppercase(), normalized)
@@ -1265,6 +1353,62 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         return out.distinctBy { it.kind + "|" + it.normalizedValue }
     }
 
+    fun deletePassengerAlias(aliasId: String): Boolean {
+        val alias = readableDatabase.rawQuery(
+            "SELECT * FROM passenger_aliases WHERE id=? LIMIT 1",
+            arrayOf(aliasId)
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null else PassengerAlias(
+                id = cursor.s("id"),
+                passengerId = cursor.s("passenger_id"),
+                kind = cursor.s("kind"),
+                value = cursor.s("value"),
+                normalizedValue = cursor.s("normalized_value"),
+                sourcePassengerId = cursor.sn("source_passenger_id"),
+                createdAt = cursor.l("created_at")
+            )
+        } ?: return false
+
+        val rootId = resolveCanonicalPassengerId(alias.passengerId)
+        val root = passengerRawById(rootId) ?: return false
+        if (alias.kind == "NAME" && alias.normalizedValue == normalizeAliasValue("NAME", root.name)) {
+            return false
+        }
+
+        val groupIds = mergedGroupIds(rootId)
+        val placeholders = groupIds.joinToString(",") { "?" }
+        val deleteArgs = groupIds.toMutableList().apply {
+            add(alias.kind)
+            add(alias.normalizedValue)
+        }.toTypedArray()
+
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.delete(
+                "passenger_aliases",
+                "passenger_id IN ($placeholders) AND kind=? AND normalized_value=?",
+                deleteArgs
+            )
+            writableDatabase.insertWithOnConflict(
+                "deleted_passenger_aliases",
+                null,
+                ContentValues().apply {
+                    put("id", UUID.randomUUID().toString())
+                    put("passenger_id", rootId)
+                    put("kind", alias.kind)
+                    put("normalized_value", alias.normalizedValue)
+                    put("deleted_at", System.currentTimeMillis())
+                },
+                SQLiteDatabase.CONFLICT_IGNORE
+            )
+            audit("passenger", rootId, "delete_alias", alias.kind + "|" + alias.value)
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        return true
+    }
+
     fun mergedPassengers(passengerId: String): List<Passenger> =
         mergedGroupIds(passengerId).drop(1).mapNotNull(::passengerRawById).sortedBy { it.name }
 
@@ -1347,16 +1491,17 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     fun txPassengerDetails(txId: String): List<TxPassengerDetail> {
         val byCanonical = linkedMapOf<String, TxPassengerDetail>()
         readableDatabase.rawQuery("""
-            SELECT p.*, tp.amount AS tp_amount, tp.base_fare AS tp_base_fare, tp.passenger_type AS tp_type,
+            SELECT p.*, tp.source_name AS tp_source_name, tp.amount AS tp_amount, tp.base_fare AS tp_base_fare, tp.passenger_type AS tp_type,
                    tp.document_no AS tp_document, tp.product AS tp_product, tp.flags AS tp_flags
             FROM passengers p JOIN tx_passengers tp ON tp.passenger_id=p.id
-            WHERE tp.tx_id=? ORDER BY p.name
+            WHERE tp.tx_id=? ORDER BY COALESCE(tp.source_name,p.name)
         """.trimIndent(), arrayOf(txId)).use { c ->
             while (c.moveToNext()) {
                 val raw = c.toPassenger()
                 val canonical = passengerById(raw.id) ?: raw
                 val next = TxPassengerDetail(
                     passenger = canonical,
+                    sourceName = c.sn("tp_source_name") ?: raw.name,
                     amount = c.dn("tp_amount"),
                     baseFare = c.dn("tp_base_fare"),
                     passengerType = c.sn("tp_type"),
@@ -1366,6 +1511,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 )
                 val previous = byCanonical[canonical.id]
                 byCanonical[canonical.id] = if (previous == null) next else previous.copy(
+                    sourceName = previous.sourceName ?: next.sourceName,
                     amount = previous.amount ?: next.amount,
                     baseFare = previous.baseFare ?: next.baseFare,
                     passengerType = previous.passengerType ?: next.passengerType,
@@ -1421,17 +1567,35 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         audit("passenger", canonicalId, "edit", person.name)
     }
 
-    fun assignResponsible(passengerId: String, responsibleId: String?, relation: String? = null) {
+    fun assignResponsible(
+        passengerId: String,
+        responsibleId: String?,
+        relation: String? = null,
+        forceConflicts: Boolean = false
+    ): List<Passenger> {
         val canonicalPassenger = resolveCanonicalPassengerId(passengerId)
         val canonicalResponsible = responsibleId?.let(::resolveCanonicalPassengerId)
-        writableDatabase.update("passengers", ContentValues().apply {
-            put("responsible_id", canonicalResponsible)
-            put("responsible_relation", relation)
-        }, "id=?", arrayOf(canonicalPassenger))
-        if (canonicalResponsible != null) {
-            writableDatabase.update("passengers", ContentValues().apply { put("is_responsible", 1) }, "id=?", arrayOf(canonicalResponsible))
+        if (canonicalResponsible == null) {
+            writableDatabase.update("passengers", ContentValues().apply {
+                putNull("responsible_id")
+                put("responsible_relation", relation)
+            }, "id=?", arrayOf(canonicalPassenger))
+            audit("passenger", canonicalPassenger, "assign_responsible", null)
+            return emptyList()
         }
-        audit("passenger", canonicalPassenger, "assign_responsible", canonicalResponsible)
+
+        val conflicts = assignResponsibleTransitively(
+            seedIds = listOf(canonicalPassenger),
+            responsibleId = canonicalResponsible,
+            forceConflicts = forceConflicts
+        )
+        if (conflicts.isEmpty()) {
+            writableDatabase.update("passengers", ContentValues().apply {
+                put("responsible_relation", relation)
+            }, "id=?", arrayOf(canonicalPassenger))
+            audit("passenger", canonicalPassenger, "assign_responsible", canonicalResponsible)
+        }
+        return conflicts
     }
 
     fun dependentsOf(responsibleId: String): List<Passenger> {
@@ -1545,38 +1709,144 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         return direct.singleOrNull()
     }
 
-    fun assignResponsibleForTransaction(txId: String, responsibleId: String) {
-        val pax = passengersFor(txId)
-        writableDatabase.beginTransaction()
-        try {
-            writableDatabase.update("passengers", ContentValues().apply { put("is_responsible", 1); putNull("responsible_id") }, "id=?", arrayOf(responsibleId))
-            pax.forEach { p ->
-                if (p.id == responsibleId) {
-                    writableDatabase.update("passengers", ContentValues().apply { putNull("responsible_id") }, "id=?", arrayOf(p.id))
-                } else {
-                    writableDatabase.update("passengers", ContentValues().apply { put("responsible_id", responsibleId) }, "id=?", arrayOf(p.id))
+    private fun connectedPassengerIds(seedIds: Collection<String>): LinkedHashSet<String> {
+        val connected = linkedSetOf<String>()
+        val queue = ArrayDeque<String>()
+        seedIds.map(::resolveCanonicalPassengerId).distinct().forEach {
+            if (connected.add(it)) queue.add(it)
+        }
+
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            val groupIds = mergedGroupIds(current)
+            if (groupIds.isEmpty()) continue
+            val groupPlaceholders = groupIds.joinToString(",") { "?" }
+            val txIds = mutableListOf<String>()
+            readableDatabase.rawQuery(
+                "SELECT DISTINCT tx_id FROM tx_passengers WHERE passenger_id IN ($groupPlaceholders)",
+                groupIds.toTypedArray()
+            ).use { cursor ->
+                while (cursor.moveToNext()) txIds += cursor.getString(0)
+            }
+            if (txIds.isEmpty()) continue
+
+            val txPlaceholders = txIds.joinToString(",") { "?" }
+            readableDatabase.rawQuery(
+                "SELECT DISTINCT passenger_id FROM tx_passengers WHERE tx_id IN ($txPlaceholders)",
+                txIds.toTypedArray()
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val next = resolveCanonicalPassengerId(cursor.getString(0))
+                    if (connected.add(next)) queue.add(next)
                 }
             }
-            writableDatabase.setTransactionSuccessful()
-        } finally { writableDatabase.endTransaction() }
-        audit("transaction", txId, "assign_responsible_group", responsibleId)
+        }
+        return connected
     }
 
-    fun assignResponsibleForPnr(pnr: String, responsibleId: String) {
-        val txIds = transactions(search = pnr, limit = 500).filter { it.pnr.equals(pnr, true) }.map { it.id }
-        val passengerIds = linkedSetOf<String>()
-        txIds.forEach { id -> passengersFor(id).forEach { passengerIds += it.id } }
+    private fun responsibleRootForPassenger(passenger: Passenger): String? = when {
+        passenger.responsibleId != null -> resolveCanonicalPassengerId(passenger.responsibleId)
+        passenger.isResponsible -> passenger.id
+        else -> null
+    }
+
+    fun responsibilityConflictsForTransaction(txId: String, responsibleId: String): List<Passenger> =
+        responsibilityConflicts(passengersFor(txId).map { it.id }, responsibleId)
+
+    fun responsibilityConflictsForPassenger(passengerId: String, responsibleId: String): List<Passenger> =
+        responsibilityConflicts(listOf(passengerId), responsibleId)
+
+    fun responsibilityConflictsForPnr(pnr: String, responsibleId: String): List<Passenger> {
+        val txIds = transactions(search = pnr, limit = 500)
+            .filter { it.pnr.equals(pnr, true) }
+            .map { it.id }
+        val seeds = linkedSetOf<String>()
+        txIds.forEach { txId -> passengersFor(txId).forEach { seeds += it.id } }
+        return responsibilityConflicts(seeds, responsibleId)
+    }
+
+    private fun responsibilityConflicts(seedIds: Collection<String>, responsibleId: String): List<Passenger> {
+        val chosen = resolveCanonicalPassengerId(responsibleId)
+        val graphSeeds = seedIds.map(::resolveCanonicalPassengerId) + chosen
+        return connectedPassengerIds(graphSeeds)
+            .mapNotNull(::passengerById)
+            .filter { passenger ->
+                passenger.id != chosen &&
+                    responsibleRootForPassenger(passenger)?.let { it != chosen } == true
+            }
+            .distinctBy { it.id }
+            .sortedBy { it.name }
+    }
+
+    private fun assignResponsibleTransitively(
+        seedIds: Collection<String>,
+        responsibleId: String,
+        forceConflicts: Boolean
+    ): List<Passenger> {
+        val chosen = resolveCanonicalPassengerId(responsibleId)
+        val conflicts = responsibilityConflicts(seedIds, chosen)
+        if (conflicts.isNotEmpty() && !forceConflicts) return conflicts
+
+        val connected = connectedPassengerIds(seedIds.map(::resolveCanonicalPassengerId) + chosen)
         writableDatabase.beginTransaction()
         try {
-            writableDatabase.update("passengers", ContentValues().apply { put("is_responsible", 1); putNull("responsible_id") }, "id=?", arrayOf(responsibleId))
-            passengerIds.forEach { pid ->
-                val cv = ContentValues()
-                if (pid == responsibleId) cv.putNull("responsible_id") else cv.put("responsible_id", responsibleId)
-                writableDatabase.update("passengers", cv, "id=?", arrayOf(pid))
+            writableDatabase.update(
+                "passengers",
+                ContentValues().apply {
+                    put("is_responsible", 1)
+                    putNull("responsible_id")
+                    putNull("responsible_relation")
+                },
+                "id=?",
+                arrayOf(chosen)
+            )
+            connected.forEach { pid ->
+                if (pid == chosen) return@forEach
+                writableDatabase.update(
+                    "passengers",
+                    ContentValues().apply {
+                        put("responsible_id", chosen)
+                    },
+                    "id=?",
+                    arrayOf(pid)
+                )
             }
             writableDatabase.setTransactionSuccessful()
-        } finally { writableDatabase.endTransaction() }
-        audit("pnr", pnr, "assign_responsible_group", responsibleId)
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        return emptyList()
+    }
+
+    fun assignResponsibleForTransaction(txId: String, responsibleId: String, forceConflicts: Boolean = false): List<Passenger> {
+        val seeds = passengersFor(txId).map { it.id }
+        val conflicts = assignResponsibleTransitively(seeds, responsibleId, forceConflicts)
+        if (conflicts.isEmpty()) audit("transaction", txId, "assign_responsible_group", resolveCanonicalPassengerId(responsibleId))
+        return conflicts
+    }
+
+    fun assignResponsibleForPnr(pnr: String, responsibleId: String, forceConflicts: Boolean = false): List<Passenger> {
+        val txIds = transactions(search = pnr, limit = 500).filter { it.pnr.equals(pnr, true) }.map { it.id }
+        val seeds = linkedSetOf<String>()
+        txIds.forEach { id -> passengersFor(id).forEach { seeds += it.id } }
+        val conflicts = assignResponsibleTransitively(seeds, responsibleId, forceConflicts)
+        if (conflicts.isEmpty()) audit("pnr", pnr, "assign_responsible_group", resolveCanonicalPassengerId(responsibleId))
+        return conflicts
+    }
+
+    private fun propagateResponsibilityAfterImport(txId: String) {
+        val pax = passengersFor(txId)
+        if (pax.isEmpty()) return
+        val candidates = pax.mapNotNull(::responsibleRootForPassenger).distinct()
+        when (candidates.size) {
+            1 -> assignResponsibleTransitively(pax.map { it.id }, candidates.first(), forceConflicts = false)
+            in 2..Int.MAX_VALUE -> audit(
+                "transaction",
+                txId,
+                "responsible_conflict",
+                candidates.joinToString("|")
+            )
+        }
     }
 
     fun transactionsForPassenger(passengerId: String): List<Transaction> {
@@ -1783,10 +2053,10 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     private fun sourcePassengerNamesFor(txId: String): List<String> {
         val out = mutableListOf<String>()
         readableDatabase.rawQuery("""
-            SELECT p.name FROM passengers p
+            SELECT COALESCE(tp.source_name,p.name) FROM passengers p
             JOIN tx_passengers tp ON tp.passenger_id=p.id
             WHERE tp.tx_id=?
-            ORDER BY p.name
+            ORDER BY COALESCE(tp.source_name,p.name)
         """.trimIndent(), arrayOf(txId)).use { c ->
             while (c.moveToNext()) out += normalize(c.getString(0))
         }

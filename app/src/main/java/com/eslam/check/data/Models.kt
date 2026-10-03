@@ -128,6 +128,7 @@ data class TxPassenger(
 
 data class TxPassengerDetail(
     val passenger: Passenger,
+    val sourceName: String? = null,
     val amount: Double? = null,
     val baseFare: Double? = null,
     val passengerType: String? = null,
