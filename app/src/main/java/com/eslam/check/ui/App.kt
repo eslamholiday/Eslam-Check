@@ -638,7 +638,7 @@ private fun cardAuditSummary(vm: MainViewModel, tx: Transaction): CardAuditSumma
         vm.setting("iqd_tolerance", "1000").toDoubleOrNull() ?: 1000.0
 
     val result = CommissionEngine.calculate(
-        passengers = effectiveDetails,
+        passengers = details,
         actualSettlement = tx.amount,
         actualDiscount = tx.discount,
         referenceTotal = tx.referenceTotal,
@@ -2718,7 +2718,7 @@ private fun TransactionDetailDialog(
         vm.setting("iqd_tolerance", "1000").toDoubleOrNull() ?: 1000.0
     }
     val commission = CommissionEngine.calculate(
-        passengers = details,
+        passengers = effectiveDetails,
         actualSettlement = edit.amount,
         actualDiscount = edit.discount,
         referenceTotal = edit.referenceTotal,
