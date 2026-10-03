@@ -17,7 +17,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.android/debug.keystore
-          key: eslam-check-debug-keystore-v1
+          key: eslam-check-stable-signing-v1
       - name: Ensure stable signing key
         shell: bash
         run: |
