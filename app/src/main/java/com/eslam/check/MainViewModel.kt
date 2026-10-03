@@ -183,6 +183,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun responsibilityConflictsForPassenger(passengerId: String, responsibleId: String): List<Passenger> =
         db.responsibilityConflictsForPassenger(passengerId, responsibleId)
     fun mergedPassengers(id: String): List<Passenger> = db.mergedPassengers(id)
+    fun passengerNetwork(id: String): List<PassengerNetworkNode> = db.passengerNetwork(id)
     fun auditEvents(entityType: String, entityId: String): List<AuditEvent> = db.auditEvents(entityType, entityId)
     fun airlineNames(): List<String> = db.airlineNames()
     fun ruleForTransaction(tx: Transaction): CommissionRule? = db.ruleForTransaction(tx)
