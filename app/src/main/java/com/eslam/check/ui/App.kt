@@ -2037,6 +2037,7 @@ private fun AirlineCatalogDialog(vm: MainViewModel, airlines: List<AirlineInfo>,
     var adding by remember { mutableStateOf(false) }
     var code by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
+    var deleteTarget by remember { mutableStateOf<AirlineInfo?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -2078,6 +2079,17 @@ private fun AirlineCatalogDialog(vm: MainViewModel, airlines: List<AirlineInfo>,
                             }
                             Spacer(Modifier.width(8.dp))
                             Text(airline.name, Modifier.weight(1f))
+                            IconButton(
+                                onClick = { deleteTarget = airline },
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.DeleteOutline,
+                                    "حذف شركة الطيران",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -2085,6 +2097,32 @@ private fun AirlineCatalogDialog(vm: MainViewModel, airlines: List<AirlineInfo>,
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("تم") } }
     )
+
+    deleteTarget?.let { airline ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("حذف شركة الطيران") },
+            text = {
+                Text(
+                    "سيتم حذف «" + airline.name + "» من قائمة شركات الطيران ومن تعرّف أرقام التذاكر الجديدة. العمليات القديمة ستبقى كما هي."
+                )
+            },
+            confirmButton = {
+                Button(
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    onClick = {
+                        vm.deleteAirline(airline.id)
+                        deleteTarget = null
+                    }
+                ) {
+                    Icon(Icons.Rounded.DeleteOutline, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("حذف")
+                }
+            },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("إلغاء") } }
+        )
+    }
 }
 
 @Composable
