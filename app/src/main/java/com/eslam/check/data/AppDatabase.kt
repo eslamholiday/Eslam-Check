@@ -1375,9 +1375,20 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             return false
         }
 
+        val groupIds = mergedGroupIds(rootId)
+        val placeholders = groupIds.joinToString(",") { "?" }
+        val deleteArgs = groupIds.toMutableList().apply {
+            add(alias.kind)
+            add(alias.normalizedValue)
+        }.toTypedArray()
+
         writableDatabase.beginTransaction()
         try {
-            writableDatabase.delete("passenger_aliases", "id=?", arrayOf(alias.id))
+            writableDatabase.delete(
+                "passenger_aliases",
+                "passenger_id IN ($placeholders) AND kind=? AND normalized_value=?",
+                deleteArgs
+            )
             writableDatabase.insertWithOnConflict(
                 "deleted_passenger_aliases",
                 null,
