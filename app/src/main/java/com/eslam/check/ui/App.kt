@@ -3052,6 +3052,10 @@ private fun TransactionDetailDialog(
         route = edit.route
     )
 
+    val visaAudit = if (edit.type == TxType.VISA || (edit.type == TxType.VOID && edit.visaCountry != null)) {
+        visaPriceAudit(vm, edit, details)
+    } else null
+
     val sourceGross = details.mapNotNull { it.amount }.sum()
     val sourceEquationDiff = if (edit.type == TxType.TICKET && sourceGross > 0.0) (sourceGross - edit.discount) - edit.amount else null
     val related = vm.relatedOperations(id)
@@ -3363,6 +3367,41 @@ private fun TransactionDetailDialog(
                                 Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                                     Text("الفيزا: " + (edit.visaCountry ?: "غير محددة"), fontWeight = FontWeight.Bold)
                                     Text(if (edit.type == TxType.VOID) "الحالة: ملغاة" else "الحالة: بيع فيزا")
+                                    visaAudit?.let { check ->
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = check.color.copy(alpha = 0.10f)
+                                        ) {
+                                            Column(
+                                                Modifier.fillMaxWidth().padding(10.dp),
+                                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                                            ) {
+                                                Text(check.statusText, color = check.color, fontWeight = FontWeight.Bold)
+                                                check.rule?.price?.let { price ->
+                                                    Text(
+                                                        "السعر الافتراضي للفرد: " + formatMoney(price, check.rule.currency),
+                                                        fontSize = 12.sp
+                                                    )
+                                                }
+                                                if (check.expectedTotal != null && check.actualTotal != null) {
+                                                    Text(
+                                                        "المتوقع: " + formatMoney(check.expectedTotal, edit.currency) +
+                                                            " • الفعلي: " + formatMoney(check.actualTotal, edit.currency),
+                                                        fontSize = 12.sp
+                                                    )
+                                                }
+                                                check.difference?.let { diff ->
+                                                    if (kotlin.math.abs(diff) > 0.0001) {
+                                                        Text(
+                                                            "الفرق: " + formatMoney(kotlin.math.abs(diff), edit.currency),
+                                                            fontSize = 12.sp,
+                                                            color = check.color
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     details.forEach { d ->
                                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                             Text(
