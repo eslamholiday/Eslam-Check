@@ -2451,6 +2451,37 @@ private fun TransactionDetailDialog(
     var selectedPassenger by remember { mutableStateOf<Passenger?>(null) }
     var rawOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
+    var attachments by remember(id) { mutableStateOf(vm.transactionAttachments(id)) }
+    var receiptPreview by remember { mutableStateOf<TransactionAttachment?>(null) }
+    var replaceAttachmentId by remember { mutableStateOf<String?>(null) }
+    var deletePassengerTarget by remember { mutableStateOf<Passenger?>(null) }
+
+    val receiptLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val chosen = if (replaceAttachmentId != null) uris.take(1) else uris
+        if (chosen.isNotEmpty()) {
+            replaceAttachmentId?.let { vm.deleteTransactionAttachmentImmediate(it) }
+            chosen.forEach { uri ->
+                try {
+                    context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (_: Exception) { }
+                var displayName: String? = null
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0) displayName = cursor.getString(idx)
+                    }
+                }
+                vm.addTransactionAttachmentImmediate(
+                    txId = id,
+                    uri = uri.toString(),
+                    mimeType = context.contentResolver.getType(uri),
+                    displayName = displayName
+                )
+            }
+            attachments = vm.transactionAttachments(id)
+        }
+        replaceAttachmentId = null
+    }
 
     val rule = vm.ruleForTransaction(edit)
     val tolerance = if (edit.currency == Currency.USD) {
