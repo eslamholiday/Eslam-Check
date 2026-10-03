@@ -2689,7 +2689,8 @@ private fun TransactionDetailDialog(
                                         if (applyToAll) vm.setPassengerBaseFareForAll(edit.id, value)
                                         else vm.setPassengerBaseFare(edit.id, passengerId, value)
                                     },
-                                    onOpenPassenger = { selectedPassenger = it }
+                                    onOpenPassenger = { selectedPassenger = it },
+                                    onDeleteLink = { deletePassengerTarget = it }
                                 )
                             }
                         }
@@ -2789,6 +2790,12 @@ private fun TransactionDetailDialog(
                                             d.amount?.let { Text(formatMoney(it, edit.currency)) }
                                             IconButton(onClick = { copyToClipboard(context, "الاسم", d.passenger.name) }, modifier = Modifier.size(30.dp)) {
                                                 Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
+                                            }
+                                            IconButton(
+                                                onClick = { deletePassengerTarget = d.passenger },
+                                                modifier = Modifier.size(30.dp)
+                                            ) {
+                                                Icon(Icons.Rounded.PersonRemove, "حذف الارتباط", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
                                             }
                                         }
                                     }
@@ -3235,7 +3242,8 @@ private fun PassengerAuditCard(
     commissionForPassenger: Double?,
     inferredCommission: Boolean,
     onBaseFareCommit: (String, Double?) -> Unit,
-    onOpenPassenger: (Passenger) -> Unit
+    onOpenPassenger: (Passenger) -> Unit,
+    onDeleteLink: (Passenger) -> Unit
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -3247,13 +3255,17 @@ private fun PassengerAuditCard(
     }
 
     fun commitBaseFare() {
-        val value = baseText.toDoubleOrNull()
+        val value = when {
+            baseText.isBlank() -> null
+            else -> baseText.toDoubleOrNull() ?: return
+        }
         if (value != lastCommitted) {
             onBaseFareCommit(detail.passenger.id, value)
             lastCommitted = value
         }
     }
 
+    val invalidBase = baseText.isNotBlank() && baseText.toDoubleOrNull() == null
     val base = baseText.toDoubleOrNull()
     val taxes = if (detail.amount != null && base != null) detail.amount - base else null
 
@@ -3271,6 +3283,12 @@ private fun PassengerAuditCard(
                     modifier = Modifier.size(30.dp)
                 ) {
                     Icon(Icons.Rounded.ContentCopy, "نسخ الاسم", modifier = Modifier.size(16.dp))
+                }
+                IconButton(
+                    onClick = { onDeleteLink(detail.passenger) },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(Icons.Rounded.PersonRemove, "حذف الارتباط", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
                 }
                 Text(detail.passengerType ?: "", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -3310,6 +3328,8 @@ private fun PassengerAuditCard(
                         focusManager.clearFocus()
                     }
                 ),
+                isError = invalidBase,
+                supportingText = if (invalidBase) ({ Text("القيمة غير صالحة ولن يتم مسح الإدخال حتى تصححها.") }) else null,
                 singleLine = true
             )
 
