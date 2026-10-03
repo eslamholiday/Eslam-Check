@@ -498,7 +498,7 @@ private fun visaPriceAudit(
     details: List<TxPassengerDetail>
 ): VisaPriceAudit {
     if (tx.type == TxType.VOID) {
-        return VisaPriceAudit(null, statusText = "فيزا ملغاة", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return VisaPriceAudit(null, statusText = "فيزا ملغاة", color = Navy)
     }
     val visaType = details.asSequence()
         .mapNotNull { it.product?.takeIf(String::isNotBlank) }
