@@ -137,6 +137,23 @@ data class DeletedPassengerLink(
     val deletedAt: Long = System.currentTimeMillis()
 )
 
+data class DataHealthStats(
+    val transactions: Int = 0,
+    val passengers: Int = 0,
+    val responsiblePassengers: Int = 0,
+    val aliases: Int = 0,
+    val deletedLinks: Int = 0,
+    val visaPriceRules: Int = 0,
+    val databaseVersion: Int = 0,
+    val databaseBytes: Long = 0L
+)
+
+data class DataConflict(
+    val kind: String,
+    val title: String,
+    val details: String
+)
+
 data class PassengerNetworkNode(
     val passenger: Passenger,
     val viaPassengerName: String? = null,
