@@ -93,6 +93,7 @@ fun EslamCheckApp(vm: MainViewModel) {
         var detailId by remember { mutableStateOf<String?>(null) }
         var detailQueue by remember { mutableStateOf<List<String>>(emptyList()) }
         var calculatorOpen by remember { mutableStateOf(false) }
+        var reviewPreset by remember { mutableStateOf("OPEN") }
 
         LaunchedEffect(message) {
             message?.let {
@@ -114,7 +115,10 @@ fun EslamCheckApp(vm: MainViewModel) {
                     ).forEach { item ->
                         NavigationBarItem(
                             selected = tab == item.first,
-                            onClick = { tab = item.first },
+                            onClick = {
+                                if (item.first == MainTab.REVIEW) reviewPreset = "OPEN"
+                                tab = item.first
+                            },
                             icon = { Icon(item.second, item.third) },
                             label = { Text(item.third) }
                         )
@@ -129,11 +133,14 @@ fun EslamCheckApp(vm: MainViewModel) {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (tab) {
-                    MainTab.HOME -> DashboardScreen(vm, { tab = MainTab.REVIEW }) {
+                    MainTab.HOME -> DashboardScreen(vm, { preset ->
+                        reviewPreset = preset
+                        tab = MainTab.REVIEW
+                    }) {
                         detailQueue = emptyList()
                         detailId = it
                     }
-                    MainTab.REVIEW -> ReviewScreen(vm) { id, queue ->
+                    MainTab.REVIEW -> ReviewScreen(vm, initialStatus = reviewPreset) { id, queue ->
                         detailQueue = queue
                         detailId = id
                     }
@@ -192,7 +199,7 @@ fun EslamCheckApp(vm: MainViewModel) {
 }
 
 @Composable
-private fun DashboardScreen(vm: MainViewModel, onOpenReview: () -> Unit, onDetail: (String) -> Unit) {
+private fun DashboardScreen(vm: MainViewModel, onOpenReview: (String) -> Unit, onDetail: (String) -> Unit) {
     val stats by vm.stats.collectAsState()
     val txs by vm.transactions.collectAsState()
     var bridgeOpen by remember { mutableStateOf(false) }
@@ -213,9 +220,9 @@ private fun DashboardScreen(vm: MainViewModel, onOpenReview: () -> Unit, onDetai
         }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatCard("غير مراجع", stats.unreviewed, Modifier.weight(1f), onOpenReview)
-                StatCard("مبهم", stats.ambiguous, Modifier.weight(1f), onOpenReview)
-                StatCard("تغيّر", stats.changed, Modifier.weight(1f), onOpenReview)
+                StatCard("غير مراجع", stats.unreviewed, Modifier.weight(1f)) { onOpenReview("OPEN") }
+                StatCard("مبهم", stats.ambiguous, Modifier.weight(1f)) { onOpenReview("AMBIG") }
+                StatCard("تغيّر", stats.changed, Modifier.weight(1f)) { onOpenReview("CHANGED") }
             }
         }
         item {
@@ -259,7 +266,7 @@ private fun DashboardScreen(vm: MainViewModel, onOpenReview: () -> Unit, onDetai
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("آخر العمليات", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                TextButton(onClick = onOpenReview) { Text("عرض الكل") }
+                TextButton(onClick = { onOpenReview("ALL") }) { Text("عرض الكل") }
             }
         }
         items(txs.take(8), key = { it.id }) { tx ->
@@ -380,11 +387,15 @@ private fun StatCard(title: String, value: Int, modifier: Modifier, onClick: () 
 }
 
 @Composable
-private fun ReviewScreen(vm: MainViewModel, onDetail: (String, List<String>) -> Unit) {
+private fun ReviewScreen(
+    vm: MainViewModel,
+    initialStatus: String = "OPEN",
+    onDetail: (String, List<String>) -> Unit
+) {
     val all by vm.transactions.collectAsState()
     var search by remember { mutableStateOf("") }
     var typeFilter by remember { mutableStateOf<Set<TxType>>(emptySet()) }
-    var statusFilter by remember { mutableStateOf("OPEN") }
+    var statusFilter by remember(initialStatus) { mutableStateOf(initialStatus) }
 
     LaunchedEffect(search) { vm.refresh(search = search) }
     DisposableEffect(Unit) {
@@ -408,6 +419,18 @@ private fun ReviewScreen(vm: MainViewModel, onDetail: (String, List<String>) -> 
 
     Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("المراجعة والتصنيف", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        val reviewedCount = all.count { it.reviewState == ReviewState.REVIEWED }
+        val reviewTotal = all.size.coerceAtLeast(1)
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("تمت مراجعة " + reviewedCount + " من " + all.size, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(((reviewedCount * 100) / reviewTotal).toString() + "%", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+            }
+            LinearProgressIndicator(
+                progress = { reviewedCount.toFloat() / reviewTotal.toFloat() },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
         OutlinedTextField(
             value = search,
             onValueChange = { search = it },
@@ -552,8 +575,9 @@ private fun TransactionCard(
     } else emptyList()
     val passengerNamesLabel = when {
         cardPassengerNames.isEmpty() -> "لا توجد أسماء مسافرين"
-        cardPassengerNames.size <= 3 -> cardPassengerNames.joinToString(" • ")
-        else -> cardPassengerNames.take(3).joinToString(" • ") + " • +" + (cardPassengerNames.size - 3)
+        cardPassengerNames.size == 1 -> "مسافر: " + cardPassengerNames.first()
+        cardPassengerNames.size <= 3 -> cardPassengerNames.size + " مسافرين: " + cardPassengerNames.joinToString(" • ")
+        else -> cardPassengerNames.size + " مسافرين: " + cardPassengerNames.take(2).joinToString(" • ") + " • +" + (cardPassengerNames.size - 2)
     }
 
     Surface(
@@ -590,14 +614,14 @@ private fun TransactionCard(
                 )
                 when {
                     tx.type == TxType.TICKET -> Text(
-                        "المسافرون: " + passengerNamesLabel,
+                        passengerNamesLabel,
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2
                     )
                     tx.type == TxType.VISA || (tx.type == TxType.VOID && tx.visaCountry != null) ->
                         Text(
-                            "المسافرون: " + passengerNamesLabel,
+                            passengerNamesLabel,
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2
@@ -646,8 +670,13 @@ private fun TransactionCard(
             }
 
             if (!showUnreviewAction && tx.reviewState != ReviewState.REVIEWED) {
-                IconButton(onClick = onReview, modifier = Modifier.align(Alignment.CenterVertically)) {
-                    Icon(Icons.Rounded.CheckCircleOutline, "تمت المراجعة", tint = Good)
+                TextButton(
+                    onClick = onReview,
+                    modifier = Modifier.align(Alignment.CenterVertically)
+                ) {
+                    Icon(Icons.Rounded.CheckCircleOutline, null, tint = Good, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(3.dp))
+                    Text("اعتماد", color = Good, fontSize = 11.sp)
                 }
             }
         }
