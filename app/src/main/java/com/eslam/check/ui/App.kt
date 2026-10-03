@@ -3309,6 +3309,10 @@ private fun ruleLabel(rule: CommissionRule): String = when (rule.kind) {
     RuleKind.NONE -> "بدون عمولة"
 }
 
+private fun compactNumber(value: Double): String =
+    if (value % 1.0 == 0.0) value.toLong().toString()
+    else value.toString().trimEnd('0').trimEnd('.')
+
 private fun formatMoney(value: Double, currency: Currency): String =
     if (currency == Currency.USD) "$" + String.format("%,.2f", value)
     else String.format("%,.0f د.ع", value)
