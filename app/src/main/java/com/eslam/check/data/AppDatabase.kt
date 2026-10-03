@@ -1345,7 +1345,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     }
 
     fun txPassengerDetails(txId: String): List<TxPassengerDetail> {
-        val out = mutableListOf<TxPassengerDetail>()
+        val byCanonical = linkedMapOf<String, TxPassengerDetail>()
         readableDatabase.rawQuery("""
             SELECT p.*, tp.amount AS tp_amount, tp.base_fare AS tp_base_fare, tp.passenger_type AS tp_type,
                    tp.document_no AS tp_document, tp.product AS tp_product, tp.flags AS tp_flags
@@ -1354,8 +1354,9 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         """.trimIndent(), arrayOf(txId)).use { c ->
             while (c.moveToNext()) {
                 val raw = c.toPassenger()
-                out += TxPassengerDetail(
-                    passenger = passengerById(raw.id) ?: raw,
+                val canonical = passengerById(raw.id) ?: raw
+                val next = TxPassengerDetail(
+                    passenger = canonical,
                     amount = c.dn("tp_amount"),
                     baseFare = c.dn("tp_base_fare"),
                     passengerType = c.sn("tp_type"),
@@ -1363,9 +1364,18 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                     product = c.sn("tp_product"),
                     flags = c.sn("tp_flags")
                 )
+                val previous = byCanonical[canonical.id]
+                byCanonical[canonical.id] = if (previous == null) next else previous.copy(
+                    amount = previous.amount ?: next.amount,
+                    baseFare = previous.baseFare ?: next.baseFare,
+                    passengerType = previous.passengerType ?: next.passengerType,
+                    documentNo = previous.documentNo ?: next.documentNo,
+                    product = previous.product ?: next.product,
+                    flags = previous.flags ?: next.flags
+                )
             }
         }
-        return out
+        return byCanonical.values.sortedBy { it.passenger.name }
     }
 
     fun setPassengerBaseFare(txId: String, passengerId: String, baseFare: Double?) {
