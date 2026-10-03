@@ -8,7 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 7) {
+class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 8) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE transactions(
@@ -64,7 +64,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 responsible_id TEXT,
                 responsible_relation TEXT,
                 is_responsible INTEGER NOT NULL DEFAULT 0,
-                merged_into_id TEXT
+                merged_into_id TEXT,
+                rating INTEGER NOT NULL DEFAULT 0
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX idx_passenger_name ON passengers(normalized_name)")
@@ -445,6 +446,9 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 )
             """.trimIndent())
             db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_deleted_alias_unique ON deleted_passenger_aliases(passenger_id, kind, normalized_value)")
+        }
+        if (oldVersion < 8) {
+            db.execSQL("ALTER TABLE passengers ADD COLUMN rating INTEGER NOT NULL DEFAULT 0")
         }
     }
 
@@ -862,6 +866,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             putNull("responsible_relation")
             put("is_responsible", 0)
             putNull("merged_into_id")
+            put("rating", 0)
         })
         addAlias(writableDatabase, p.id, "NAME", clean, p.id)
         if (!passport.isNullOrBlank()) addAlias(writableDatabase, p.id, "PASSPORT", passport, p.id)
@@ -1234,7 +1239,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
     private fun Cursor.toPassenger() = Passenger(
         id = s("id"), name = s("name"), passport = sn("passport"), phone = sn("phone"),
         responsibleId = sn("responsible_id"), responsibleRelation = sn("responsible_relation"),
-        isResponsible = i("is_responsible") == 1, mergedIntoId = sn("merged_into_id")
+        isResponsible = i("is_responsible") == 1, mergedIntoId = sn("merged_into_id"),
+        rating = i("rating").coerceIn(0, 5)
     )
 
     private fun normalizeAliasValue(kind: String, value: String): String = when (kind.uppercase()) {
@@ -1446,6 +1452,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                         put("responsible_relation", source.responsibleRelation)
                     }
                     put("is_responsible", if (currentPrimary.isResponsible || source.isResponsible) 1 else 0)
+                    put("rating", maxOf(currentPrimary.rating, source.rating).coerceIn(0, 5))
                 }, "id=?", arrayOf(primary.id))
 
                 writableDatabase.update("passengers", ContentValues().apply {
@@ -1559,12 +1566,25 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             put("responsible_id", responsibleId)
             put("responsible_relation", person.responsibleRelation)
             put("is_responsible", if (person.isResponsible) 1 else 0)
+            put("rating", person.rating.coerceIn(0, 5))
         }, "id=?", arrayOf(canonicalId))
 
         addAlias(writableDatabase, canonicalId, "NAME", person.name, canonicalId)
         addAlias(writableDatabase, canonicalId, "PASSPORT", person.passport, canonicalId)
         addAlias(writableDatabase, canonicalId, "PHONE", person.phone, canonicalId)
         audit("passenger", canonicalId, "edit", person.name)
+    }
+
+    fun setPassengerRating(passengerId: String, rating: Int) {
+        val canonicalId = resolveCanonicalPassengerId(passengerId)
+        val safe = rating.coerceIn(0, 5)
+        writableDatabase.update(
+            "passengers",
+            ContentValues().apply { put("rating", safe) },
+            "id=?",
+            arrayOf(canonicalId)
+        )
+        audit("passenger", canonicalId, "rating", safe.toString())
     }
 
     fun assignResponsible(
