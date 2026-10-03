@@ -479,6 +479,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             """.trimIndent())
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_visa_price_country ON visa_price_rules(country, currency, active)")
             seedVisaCountries(db)
+            putSettingIfMissing(db, "visa_usd_tolerance", "0.01")
+            putSettingIfMissing(db, "visa_iqd_tolerance", "1000")
 
             db.rawQuery("SELECT id,phone FROM passengers WHERE phone IS NOT NULL AND phone<>''", null).use { cursor ->
                 while (cursor.moveToNext()) {
@@ -530,6 +532,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         putSetting(db, "page_size", "20")
         putSetting(db, "usd_tolerance", "1.0")
         putSetting(db, "iqd_tolerance", "1000")
+        putSetting(db, "visa_usd_tolerance", "0.01")
+        putSetting(db, "visa_iqd_tolerance", "1000")
         putSetting(db, "issuer_whatsapp", "")
         putSetting(db, "issuer_contact_type", "GROUP")
         putSetting(db, "issuer_group_url", "https://chat.whatsapp.com/CSubCIjAE5Y0qnzWOI5Z6K?s=cl&p=a&mlu=4&ilr=4")
