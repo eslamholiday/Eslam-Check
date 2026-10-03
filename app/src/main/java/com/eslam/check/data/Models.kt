@@ -14,6 +14,31 @@ enum class RuleKind { PERCENT_BASE, FIXED_PER_PASSENGER, PRIVATE_MANUAL, NONE }
 
 enum class PassengerCategory { ALL, RESPONSIBLE, DEPENDENT, INDEPENDENT }
 
+private val IRAQ_MOBILE_PREFIXES = setOf("075", "077", "078", "079")
+
+fun normalizeIraqPhoneOrNull(value: String?): String? {
+    var digits = value.orEmpty().filter(Char::isDigit)
+    if (digits.isBlank()) return null
+    digits = when {
+        digits.startsWith("00964") -> digits.removePrefix("00964")
+        digits.startsWith("964") -> digits.removePrefix("964")
+        else -> digits
+    }
+    if (digits.length == 10 && digits.startsWith("7")) digits = "0" + digits
+    if (digits.length != 11 || !digits.startsWith("0")) return null
+    if (digits.take(3) !in IRAQ_MOBILE_PREFIXES) return null
+    return digits
+}
+
+fun normalizeIraqPhoneForStorage(value: String?): String? {
+    val raw = value?.trim().orEmpty()
+    if (raw.isBlank()) return null
+    return normalizeIraqPhoneOrNull(raw) ?: raw
+}
+
+fun iraqPhoneForWhatsApp(value: String?): String? =
+    normalizeIraqPhoneOrNull(value)?.let { "964" + it.drop(1) }
+
 data class Transaction(
     val id: String,
     val externalId: String? = null,
@@ -108,6 +133,17 @@ data class DeletedPassengerLink(
     val product: String? = null,
     val flags: String? = null,
     val deletedAt: Long = System.currentTimeMillis()
+)
+
+data class VisaPriceRule(
+    val id: String,
+    val country: String,
+    val visaType: String? = null,
+    val price: Double? = null,
+    val currency: Currency = Currency.USD,
+    val active: Boolean = true,
+    val note: String? = null,
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
 data class ResponsibleContact(
