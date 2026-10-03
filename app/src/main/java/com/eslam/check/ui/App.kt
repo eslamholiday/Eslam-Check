@@ -93,6 +93,8 @@ fun EslamCheckApp(vm: MainViewModel) {
         var detailId by remember { mutableStateOf<String?>(null) }
         var detailQueue by remember { mutableStateOf<List<String>>(emptyList()) }
         var calculatorOpen by remember { mutableStateOf(false) }
+        var addMenuOpen by remember { mutableStateOf(false) }
+        var quickBridgeOpen by remember { mutableStateOf(false) }
         var reviewPreset by remember { mutableStateOf("OPEN") }
 
         LaunchedEffect(message) {
@@ -126,8 +128,42 @@ fun EslamCheckApp(vm: MainViewModel) {
                 }
             },
             floatingActionButton = {
-                FloatingActionButton(onClick = { manualOpen = true }) {
-                    Icon(Icons.Rounded.Add, "إضافة")
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (addMenuOpen) {
+                        ExtendedFloatingActionButton(
+                            text = { Text("استيراد ECX") },
+                            icon = { Icon(Icons.Rounded.ContentPaste, null) },
+                            onClick = {
+                                quickBridgeOpen = true
+                                addMenuOpen = false
+                            }
+                        )
+                        ExtendedFloatingActionButton(
+                            text = { Text("الحاسبة") },
+                            icon = { Icon(Icons.Rounded.Calculate, null) },
+                            onClick = {
+                                calculatorOpen = true
+                                addMenuOpen = false
+                            }
+                        )
+                        ExtendedFloatingActionButton(
+                            text = { Text("إضافة عملية") },
+                            icon = { Icon(Icons.Rounded.AddCircle, null) },
+                            onClick = {
+                                manualOpen = true
+                                addMenuOpen = false
+                            }
+                        )
+                    }
+                    FloatingActionButton(onClick = { addMenuOpen = !addMenuOpen }) {
+                        Icon(
+                            if (addMenuOpen) Icons.Rounded.Close else Icons.Rounded.Add,
+                            if (addMenuOpen) "إغلاق القائمة" else "إضافة"
+                        )
+                    }
                 }
             }
         ) { padding ->
@@ -155,11 +191,13 @@ fun EslamCheckApp(vm: MainViewModel) {
                     MainTab.MORE -> MoreScreen(vm)
                 }
 
-                CalculatorBubble(
-                    opened = calculatorOpen,
-                    onToggle = { calculatorOpen = !calculatorOpen },
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 82.dp)
-                )
+                if (calculatorOpen) {
+                    CalculatorBubble(
+                        opened = true,
+                        onToggle = { calculatorOpen = false },
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 12.dp)
+                    )
+                }
 
                 if (busy) {
                     Box(
@@ -183,6 +221,9 @@ fun EslamCheckApp(vm: MainViewModel) {
 
         if (manualOpen) {
             ManualTransactionDialog(vm) { manualOpen = false }
+        }
+        if (quickBridgeOpen) {
+            BridgeImportDialog(vm) { quickBridgeOpen = false }
         }
         detailId?.let { id ->
             key(id) {
