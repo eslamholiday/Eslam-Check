@@ -3328,30 +3328,102 @@ private fun TransactionDetailDialog(
 
     if (responsiblePicker) {
         AlertDialog(
-            onDismissRequest = { responsiblePicker = false },
+            onDismissRequest = {
+                responsiblePicker = false
+                responsibleSearch = ""
+            },
             title = { Text("تحديد المسؤول") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        if (!edit.pnr.isNullOrBlank()) "اختيار أحد مسافري PNR سيضم بقية المسافرين تحته تلقائيًا."
-                        else "اختيار مسؤول سيضم بقية الأشخاص في هذه العملية تحته.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "يمكن اختيار أحد مسافري العملية أو مسؤول محفوظ مسبقًا. المسؤول المختار يمتد تلقائيًا إلى المسافرين المترابطين عبر العمليات المشتركة.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
                     )
-                    LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                        items(pnrPassengers, key = { it.id }) { p ->
-                            TextButton(
-                                modifier = Modifier.fillMaxWidth(),
-                                onClick = {
-                                    if (!edit.pnr.isNullOrBlank()) vm.assignResponsibleForPnr(edit.pnr.orEmpty(), p.id)
-                                    else vm.assignResponsibleForTransaction(edit.id, p.id)
-                                    responsiblePicker = false
-                                }
-                            ) {
-                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Rounded.Person, null)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(p.name, Modifier.weight(1f))
-                                    if (!p.phone.isNullOrBlank()) Icon(Icons.Rounded.Chat, null, modifier = Modifier.size(16.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(
+                            selected = responsiblePickerTab == "OPERATION",
+                            onClick = { responsiblePickerTab = "OPERATION" },
+                            label = { Text("مسافرو العملية") }
+                        )
+                        FilterChip(
+                            selected = responsiblePickerTab == "EXISTING",
+                            onClick = { responsiblePickerTab = "EXISTING" },
+                            label = { Text("المسؤولون الحاليون") }
+                        )
+                    }
+
+                    if (responsiblePickerTab == "EXISTING") {
+                        OutlinedTextField(
+                            value = responsibleSearch,
+                            onValueChange = { responsibleSearch = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("بحث بالاسم أو الهاتف") },
+                            leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                            singleLine = true
+                        )
+                    }
+
+                    val candidates = if (responsiblePickerTab == "OPERATION") {
+                        pnrPassengers
+                    } else {
+                        allPassengers.filter { p ->
+                            p.isResponsible &&
+                                (responsibleSearch.isBlank() ||
+                                    p.name.contains(responsibleSearch, true) ||
+                                    p.phone.orEmpty().contains(responsibleSearch, true))
+                        }
+                    }
+
+                    if (candidates.isEmpty()) {
+                        Text(
+                            if (responsiblePickerTab == "EXISTING") "لا يوجد مسؤول مطابق للبحث." else "لا يوجد مسافرون للاختيار.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                            items(candidates.distinctBy { it.id }, key = { it.id }) { p ->
+                                TextButton(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onClick = {
+                                        val conflicts = if (!edit.pnr.isNullOrBlank()) {
+                                            vm.responsibilityConflictsForPnr(edit.pnr.orEmpty(), p.id)
+                                        } else {
+                                            vm.responsibilityConflictsForTransaction(edit.id, p.id)
+                                        }
+                                        if (conflicts.isEmpty()) {
+                                            if (!edit.pnr.isNullOrBlank()) {
+                                                vm.assignResponsibleForPnr(edit.pnr.orEmpty(), p.id)
+                                            } else {
+                                                vm.assignResponsibleForTransaction(edit.id, p.id)
+                                            }
+                                            responsiblePicker = false
+                                            responsibleSearch = ""
+                                        } else {
+                                            pendingResponsible = p
+                                            responsibilityConflicts = conflicts
+                                            responsiblePicker = false
+                                        }
+                                    }
+                                ) {
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            if (p.isResponsible) Icons.Rounded.SupervisorAccount else Icons.Rounded.Person,
+                                            null
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(p.name)
+                                            val info = listOfNotNull(
+                                                p.phone?.takeIf { it.isNotBlank() },
+                                                if (p.isResponsible) vm.dependentsOf(p.id).size.toString() + " تابع" else null
+                                            ).joinToString(" • ")
+                                            if (info.isNotBlank()) {
+                                                Text(info, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                        }
+                                        if (!p.phone.isNullOrBlank()) Icon(Icons.Rounded.Chat, null, modifier = Modifier.size(16.dp))
+                                    }
                                 }
                             }
                         }
@@ -3359,6 +3431,49 @@ private fun TransactionDetailDialog(
                 }
             },
             confirmButton = {}
+        )
+    }
+
+    pendingResponsible?.let { selected ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingResponsible = null
+                responsibilityConflicts = emptyList()
+            },
+            title = { Text("تعارض في المسؤول") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("هناك مسافرون ضمن المجموعة المترابطة يتبعون مسؤولًا مختلفًا:")
+                    responsibilityConflicts.take(10).forEach { conflict ->
+                        Text("• " + conflict.name, fontSize = 13.sp)
+                    }
+                    if (responsibilityConflicts.size > 10) {
+                        Text("و" + (responsibilityConflicts.size - 10) + " آخرون…", fontSize = 12.sp)
+                    }
+                    Text(
+                        "إذا اعتمدت «" + selected.name + "»، سيتم نقل المجموعة المترابطة إلى هذا المسؤول.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (!edit.pnr.isNullOrBlank()) {
+                        vm.assignResponsibleForPnr(edit.pnr.orEmpty(), selected.id, forceConflicts = true)
+                    } else {
+                        vm.assignResponsibleForTransaction(edit.id, selected.id, forceConflicts = true)
+                    }
+                    pendingResponsible = null
+                    responsibilityConflicts = emptyList()
+                    responsibleSearch = ""
+                }) { Text("اعتماد المسؤول الجديد") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingResponsible = null
+                    responsibilityConflicts = emptyList()
+                }) { Text("إلغاء") }
+            }
         )
     }
 
