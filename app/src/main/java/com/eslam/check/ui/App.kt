@@ -2285,10 +2285,22 @@ private fun WhatsAppSettings(vm: MainViewModel, onBack: () -> Unit) {
     }
 }
 
+private fun visaCountryLabel(code: String): String = when (code.uppercase()) {
+    "UAE" -> "الإمارات"
+    "JORDAN" -> "الأردن"
+    "EGYPT" -> "مصر"
+    else -> code
+}
+
 @Composable
 private fun VisaSettings(vm: MainViewModel, onBack: () -> Unit) {
     val context = LocalContext.current
-    var link by remember { mutableStateOf(vm.setting("visa_link", "https://docs.google.com/spreadsheets/d/1NwV7H_9AGEWunvE6rY5d-U4qi6lOkME23oawFA2jx_Q/edit?usp=drivesdk")) }
+    val revision by vm.settingsRevision.collectAsState()
+    val rules = remember(revision) { vm.visaPriceRules() }
+    var link by remember(revision) {
+        mutableStateOf(vm.setting("visa_link", "https://docs.google.com/spreadsheets/d/1NwV7H_9AGEWunvE6rY5d-U4qi6lOkME23oawFA2jx_Q/edit?usp=drivesdk"))
+    }
+    var editing by remember { mutableStateOf<VisaPriceRule?>(null) }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -2298,9 +2310,90 @@ private fun VisaSettings(vm: MainViewModel, onBack: () -> Unit) {
         item { SettingsHeader("الفيز", onBack) }
         item {
             SettingsInfoCard(
-                "مراجعة الفيز",
-                "لا يظهر Discount في الفيز. يعرض النوع/الدولة والأسماء والأسعار فقط، والإلغاء يبقى واضحًا."
+                "مراجعة أسعار الفيز",
+                "الأسعار الافتراضية تُدخل يدويًا وتستخدم للمقارنة التلقائية مع عمليات الفيز الجديدة. الدول المحملة من بيانات عملك: الإمارات، الأردن، مصر."
             )
+        }
+        item {
+            Button(
+                onClick = { editing = VisaPriceRule(id = "", country = "UAE", currency = Currency.USD) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Rounded.Add, null)
+                Spacer(Modifier.width(5.dp))
+                Text("إضافة سعر فيزا")
+            }
+        }
+        items(rules, key = { it.id }) { rule ->
+            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(visaCountryLabel(rule.country), fontWeight = FontWeight.Bold)
+                            Text(
+                                listOfNotNull(
+                                    rule.visaType?.takeIf { it.isNotBlank() } ?: "السعر الافتراضي",
+                                    rule.currency.name
+                                ).joinToString(" • "),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        AssistChip(
+                            onClick = {},
+                            label = { Text(if (rule.active) "مفعّل" else "متوقف") },
+                            leadingIcon = {
+                                Icon(
+                                    if (rule.active) Icons.Rounded.CheckCircle else Icons.Rounded.PauseCircle,
+                                    null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        )
+                    }
+                    Text(
+                        rule.price?.let { "السعر: " + formatMoney(it, rule.currency) } ?: "السعر: غير مدخل",
+                        color = if (rule.price == null) Warn else MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    rule.note?.takeIf { it.isNotBlank() }?.let {
+                        Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        OutlinedButton(onClick = { editing = rule }) {
+                            Icon(Icons.Rounded.Edit, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("تعديل")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                editing = rule.copy(
+                                    id = "",
+                                    visaType = rule.visaType?.let { it + " نسخة" } ?: "نسخة"
+                                )
+                            }
+                        ) {
+                            Icon(Icons.Rounded.ContentCopy, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("نسخ")
+                        }
+                        FilledTonalButton(
+                            onClick = { vm.saveVisaPriceRule(rule.copy(active = !rule.active)) }
+                        ) {
+                            Icon(
+                                if (rule.active) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                null,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (rule.active) "تعطيل" else "تفعيل")
+                        }
+                    }
+                }
+            }
         }
         item {
             Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
@@ -2322,6 +2415,128 @@ private fun VisaSettings(vm: MainViewModel, onBack: () -> Unit) {
             }
         }
     }
+
+    editing?.let { rule ->
+        VisaPriceRuleDialog(
+            rule = rule,
+            onDismiss = { editing = null },
+            onSave = {
+                vm.saveVisaPriceRule(it)
+                editing = null
+            }
+        )
+    }
+}
+
+@Composable
+private fun VisaPriceRuleDialog(
+    rule: VisaPriceRule,
+    onDismiss: () -> Unit,
+    onSave: (VisaPriceRule) -> Unit
+) {
+    var country by remember(rule.id, rule.country, rule.visaType) { mutableStateOf(rule.country) }
+    var visaType by remember(rule.id, rule.country, rule.visaType) { mutableStateOf(rule.visaType.orEmpty()) }
+    var price by remember(rule.id, rule.price) { mutableStateOf(rule.price?.toString().orEmpty()) }
+    var currency by remember(rule.id, rule.currency) { mutableStateOf(rule.currency) }
+    var active by remember(rule.id, rule.active) { mutableStateOf(rule.active) }
+    var note by remember(rule.id, rule.note) { mutableStateOf(rule.note.orEmpty()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (rule.id.isBlank()) "إضافة سعر فيزا" else "تعديل سعر الفيزا") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 560.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    Text("الدولة", fontWeight = FontWeight.Bold)
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("UAE" to "الإمارات", "JORDAN" to "الأردن", "EGYPT" to "مصر").forEach { (code, label) ->
+                            FilterChip(
+                                selected = country.equals(code, true),
+                                onClick = { country = code },
+                                label = { Text(label) }
+                            )
+                        }
+                    }
+                }
+                item {
+                    OutlinedTextField(
+                        country,
+                        { country = it },
+                        Modifier.fillMaxWidth(),
+                        label = { Text("الدولة / الكود") },
+                        singleLine = true
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        visaType,
+                        { visaType = it },
+                        Modifier.fillMaxWidth(),
+                        label = { Text("نوع الفيزا - اختياري") },
+                        supportingText = { Text("اتركه فارغًا ليكون السعر الافتراضي للدولة") },
+                        singleLine = true
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        price,
+                        { price = it },
+                        Modifier.fillMaxWidth(),
+                        label = { Text("السعر الافتراضي") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true
+                    )
+                }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Currency.entries.forEach { cur ->
+                            FilterChip(
+                                selected = currency == cur,
+                                onClick = { currency = cur },
+                                label = { Text(cur.name) }
+                            )
+                        }
+                    }
+                }
+                item {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("مفعّل", Modifier.weight(1f))
+                        Switch(checked = active, onCheckedChange = { active = it })
+                    }
+                }
+                item {
+                    OutlinedTextField(
+                        note,
+                        { note = it },
+                        Modifier.fillMaxWidth(),
+                        label = { Text("ملاحظة - اختياري") },
+                        minLines = 2
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = country.isNotBlank() && (price.isBlank() || price.toDoubleOrNull() != null),
+                onClick = {
+                    onSave(
+                        rule.copy(
+                            country = country,
+                            visaType = visaType.ifBlank { null },
+                            price = price.toDoubleOrNull(),
+                            currency = currency,
+                            active = active,
+                            note = note.ifBlank { null }
+                        )
+                    )
+                }
+            ) { Text("حفظ") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+    )
 }
 
 @Composable
