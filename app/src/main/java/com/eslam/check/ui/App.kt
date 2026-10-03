@@ -617,8 +617,8 @@ private fun TransactionCard(
     val passengerNamesLabel = when {
         cardPassengerNames.isEmpty() -> "لا توجد أسماء مسافرين"
         cardPassengerNames.size == 1 -> "مسافر: " + cardPassengerNames.first()
-        cardPassengerNames.size <= 3 -> cardPassengerNames.size + " مسافرين: " + cardPassengerNames.joinToString(" • ")
-        else -> cardPassengerNames.size + " مسافرين: " + cardPassengerNames.take(2).joinToString(" • ") + " • +" + (cardPassengerNames.size - 2)
+        cardPassengerNames.size <= 3 -> cardPassengerNames.size.toString() + " مسافرين: " + cardPassengerNames.joinToString(" • ")
+        else -> cardPassengerNames.size.toString() + " مسافرين: " + cardPassengerNames.take(2).joinToString(" • ") + " • +" + (cardPassengerNames.size - 2)
     }
 
     Surface(
