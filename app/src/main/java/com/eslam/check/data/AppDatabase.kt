@@ -8,7 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 5) {
+class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 6) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE transactions(
@@ -97,6 +97,40 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX idx_passenger_files_owner ON passenger_files(passenger_id)")
+
+        db.execSQL("""
+            CREATE TABLE transaction_attachments(
+                id TEXT PRIMARY KEY,
+                tx_id TEXT NOT NULL,
+                uri TEXT NOT NULL,
+                mime_type TEXT,
+                display_name TEXT,
+                created_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_tx_attachments_owner ON transaction_attachments(tx_id)")
+
+        db.execSQL("""
+            CREATE TABLE deleted_tx_passengers(
+                id TEXT PRIMARY KEY,
+                tx_id TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                operation_no TEXT,
+                passenger_id TEXT NOT NULL,
+                passenger_name TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                normalized_passport TEXT,
+                amount REAL,
+                base_fare REAL,
+                passenger_type TEXT,
+                document_no TEXT,
+                product TEXT,
+                flags TEXT,
+                deleted_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_deleted_tx_pax_tx ON deleted_tx_passengers(tx_id)")
+        db.execSQL("CREATE INDEX idx_deleted_tx_pax_key ON deleted_tx_passengers(currency, operation_no)")
 
         db.execSQL("""
             CREATE TABLE responsible_contacts(
@@ -336,6 +370,40 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
                 }
             }
         }
+        if (oldVersion < 6) {
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS transaction_attachments(
+                    id TEXT PRIMARY KEY,
+                    tx_id TEXT NOT NULL,
+                    uri TEXT NOT NULL,
+                    mime_type TEXT,
+                    display_name TEXT,
+                    created_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_tx_attachments_owner ON transaction_attachments(tx_id)")
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS deleted_tx_passengers(
+                    id TEXT PRIMARY KEY,
+                    tx_id TEXT NOT NULL,
+                    currency TEXT NOT NULL,
+                    operation_no TEXT,
+                    passenger_id TEXT NOT NULL,
+                    passenger_name TEXT NOT NULL,
+                    normalized_name TEXT NOT NULL,
+                    normalized_passport TEXT,
+                    amount REAL,
+                    base_fare REAL,
+                    passenger_type TEXT,
+                    document_no TEXT,
+                    product TEXT,
+                    flags TEXT,
+                    deleted_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_deleted_tx_pax_tx ON deleted_tx_passengers(tx_id)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_deleted_tx_pax_key ON deleted_tx_passengers(currency, operation_no)")
+        }
     }
 
     private fun seedDefaults(db: SQLiteDatabase) {
@@ -538,7 +606,9 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         }
         parsedWithId.passengers.forEach { p ->
             val passenger = findOrCreatePassenger(p.name, p.passport)
-            linkPassenger(tx.id, passenger.id, p.amount, p.passengerType, p.documentNo, p.product, p.flags)
+            if (!isPassengerLinkDeleted(tx, passenger.id, p.name, p.passport)) {
+                linkPassenger(tx.id, passenger.id, p.amount, p.passengerType, p.documentNo, p.product, p.flags)
+            }
         }
         audit(
             "transaction",
@@ -774,6 +844,204 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
+    private fun isPassengerLinkDeleted(tx: Transaction, passengerId: String, sourceName: String, passport: String?): Boolean {
+        val groupIds = mergedGroupIds(passengerId)
+        val normalizedName = normalizeAliasValue("NAME", sourceName)
+        val normalizedPassport = passport?.takeIf { it.isNotBlank() }?.let { normalizeAliasValue("PASSPORT", it) }
+        val scopeSql: String
+        val scopeArgs = mutableListOf<String>()
+        if (!tx.operationNo.isNullOrBlank()) {
+            scopeSql = "currency=? AND operation_no=?"
+            scopeArgs += tx.currency.name
+            scopeArgs += tx.operationNo
+        } else {
+            scopeSql = "tx_id=?"
+            scopeArgs += tx.id
+        }
+
+        val identityParts = mutableListOf<String>()
+        if (groupIds.isNotEmpty()) {
+            identityParts += "passenger_id IN (" + groupIds.joinToString(",") { "?" } + ")"
+            scopeArgs += groupIds
+        }
+        identityParts += "normalized_name=?"
+        scopeArgs += normalizedName
+        if (!normalizedPassport.isNullOrBlank()) {
+            identityParts += "normalized_passport=?"
+            scopeArgs += normalizedPassport
+        }
+
+        return readableDatabase.rawQuery(
+            "SELECT 1 FROM deleted_tx_passengers WHERE $scopeSql AND (" + identityParts.joinToString(" OR ") + ") LIMIT 1",
+            scopeArgs.toTypedArray()
+        ).use { it.moveToFirst() }
+    }
+
+    fun deletePassengerLink(txId: String, passengerId: String): DeletedPassengerLink? {
+        val tx = transaction(txId) ?: return null
+        val rootId = resolveCanonicalPassengerId(passengerId)
+        val groupIds = mergedGroupIds(rootId)
+        if (groupIds.isEmpty()) return null
+        val placeholders = groupIds.joinToString(",") { "?" }
+        val args = mutableListOf<String>()
+        args += txId
+        args += groupIds
+
+        var row: DeletedPassengerLink? = null
+        readableDatabase.rawQuery(
+            """
+                SELECT tp.amount,tp.base_fare,tp.passenger_type,tp.document_no,tp.product,tp.flags,
+                       p.name,p.passport,tp.passenger_id
+                FROM tx_passengers tp
+                JOIN passengers p ON p.id=tp.passenger_id
+                WHERE tp.tx_id=? AND tp.passenger_id IN ($placeholders)
+                LIMIT 1
+            """.trimIndent(),
+            args.toTypedArray()
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                val canonical = passengerById(rootId) ?: passengerRawById(rootId)
+                val displayName = canonical?.name ?: cursor.getString(6)
+                val passportValue = canonical?.passport ?: if (cursor.isNull(7)) null else cursor.getString(7)
+                row = DeletedPassengerLink(
+                    id = UUID.randomUUID().toString(),
+                    txId = tx.id,
+                    currency = tx.currency,
+                    operationNo = tx.operationNo,
+                    passengerId = rootId,
+                    passengerName = displayName,
+                    normalizedName = normalizeAliasValue("NAME", displayName),
+                    normalizedPassport = passportValue?.takeIf { it.isNotBlank() }?.let { normalizeAliasValue("PASSPORT", it) },
+                    amount = if (cursor.isNull(0)) null else cursor.getDouble(0),
+                    baseFare = if (cursor.isNull(1)) null else cursor.getDouble(1),
+                    passengerType = if (cursor.isNull(2)) null else cursor.getString(2),
+                    documentNo = if (cursor.isNull(3)) null else cursor.getString(3),
+                    product = if (cursor.isNull(4)) null else cursor.getString(4),
+                    flags = if (cursor.isNull(5)) null else cursor.getString(5)
+                )
+            }
+        }
+        val deleted = row ?: return null
+
+        writableDatabase.beginTransaction()
+        try {
+            val duplicateWhere = if (!tx.operationNo.isNullOrBlank())
+                "currency=? AND operation_no=? AND (passenger_id=? OR normalized_name=?)"
+            else
+                "tx_id=? AND (passenger_id=? OR normalized_name=?)"
+            val duplicateArgs = if (!tx.operationNo.isNullOrBlank())
+                arrayOf(tx.currency.name, tx.operationNo, rootId, deleted.normalizedName)
+            else
+                arrayOf(tx.id, rootId, deleted.normalizedName)
+            writableDatabase.delete("deleted_tx_passengers", duplicateWhere, duplicateArgs)
+            writableDatabase.insertOrThrow("deleted_tx_passengers", null, ContentValues().apply {
+                put("id", deleted.id)
+                put("tx_id", deleted.txId)
+                put("currency", deleted.currency.name)
+                put("operation_no", deleted.operationNo)
+                put("passenger_id", deleted.passengerId)
+                put("passenger_name", deleted.passengerName)
+                put("normalized_name", deleted.normalizedName)
+                put("normalized_passport", deleted.normalizedPassport)
+                put("amount", deleted.amount)
+                put("base_fare", deleted.baseFare)
+                put("passenger_type", deleted.passengerType)
+                put("document_no", deleted.documentNo)
+                put("product", deleted.product)
+                put("flags", deleted.flags)
+                put("deleted_at", deleted.deletedAt)
+            })
+            writableDatabase.delete(
+                "tx_passengers",
+                "tx_id=? AND passenger_id IN ($placeholders)",
+                args.toTypedArray()
+            )
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        audit("transaction", tx.id, "delete_passenger_link", deleted.passengerName + "|" + (tx.operationNo ?: tx.id))
+        return deleted
+    }
+
+    fun deletedPassengerLinks(limit: Int = 200): List<DeletedPassengerLink> {
+        val out = mutableListOf<DeletedPassengerLink>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM deleted_tx_passengers ORDER BY deleted_at DESC LIMIT ?",
+            arrayOf(limit.toString())
+        ).use { c ->
+            while (c.moveToNext()) {
+                out += DeletedPassengerLink(
+                    id = c.s("id"),
+                    txId = c.s("tx_id"),
+                    currency = Currency.valueOf(c.s("currency")),
+                    operationNo = c.sn("operation_no"),
+                    passengerId = c.s("passenger_id"),
+                    passengerName = c.s("passenger_name"),
+                    normalizedName = c.s("normalized_name"),
+                    normalizedPassport = c.sn("normalized_passport"),
+                    amount = c.dn("amount"),
+                    baseFare = c.dn("base_fare"),
+                    passengerType = c.sn("passenger_type"),
+                    documentNo = c.sn("document_no"),
+                    product = c.sn("product"),
+                    flags = c.sn("flags"),
+                    deletedAt = c.l("deleted_at")
+                )
+            }
+        }
+        return out
+    }
+
+    fun restoreDeletedPassengerLink(id: String): Boolean {
+        val item = readableDatabase.rawQuery(
+            "SELECT * FROM deleted_tx_passengers WHERE id=? LIMIT 1",
+            arrayOf(id)
+        ).use { c ->
+            if (!c.moveToFirst()) null else DeletedPassengerLink(
+                id = c.s("id"),
+                txId = c.s("tx_id"),
+                currency = Currency.valueOf(c.s("currency")),
+                operationNo = c.sn("operation_no"),
+                passengerId = c.s("passenger_id"),
+                passengerName = c.s("passenger_name"),
+                normalizedName = c.s("normalized_name"),
+                normalizedPassport = c.sn("normalized_passport"),
+                amount = c.dn("amount"),
+                baseFare = c.dn("base_fare"),
+                passengerType = c.sn("passenger_type"),
+                documentNo = c.sn("document_no"),
+                product = c.sn("product"),
+                flags = c.sn("flags"),
+                deletedAt = c.l("deleted_at")
+            )
+        } ?: return false
+        val tx = transaction(item.txId) ?: return false
+        val passenger = passengerById(item.passengerId) ?: passengerRawById(item.passengerId) ?: return false
+
+        writableDatabase.beginTransaction()
+        try {
+            linkPassenger(
+                tx.id,
+                passenger.id,
+                item.amount,
+                item.passengerType,
+                item.documentNo,
+                item.product,
+                item.flags
+            )
+            if (item.baseFare != null) {
+                setPassengerBaseFare(tx.id, passenger.id, item.baseFare)
+            }
+            writableDatabase.delete("deleted_tx_passengers", "id=?", arrayOf(id))
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        audit("transaction", tx.id, "restore_passenger_link", passenger.name + "|" + (tx.operationNo ?: tx.id))
+        return true
+    }
+
     fun markReview(id: String, state: ReviewState) {
         val tx = transaction(id)
         val values = ContentValues().apply {
@@ -798,6 +1066,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         writableDatabase.beginTransaction()
         try {
             writableDatabase.delete("tx_passengers", "tx_id=?", arrayOf(id))
+            writableDatabase.delete("transaction_attachments", "tx_id=?", arrayOf(id))
+            writableDatabase.delete("deleted_tx_passengers", "tx_id=?", arrayOf(id))
             writableDatabase.delete("transactions", "id=?", arrayOf(id))
             writableDatabase.setTransactionSuccessful()
         } finally { writableDatabase.endTransaction() }
@@ -1388,6 +1658,56 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         audit("passenger", ownerId, "primary_passport_file", id)
     }
 
+    fun transactionAttachments(txId: String): List<TransactionAttachment> {
+        val out = mutableListOf<TransactionAttachment>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM transaction_attachments WHERE tx_id=? ORDER BY created_at DESC",
+            arrayOf(txId)
+        ).use { c ->
+            while (c.moveToNext()) {
+                out += TransactionAttachment(
+                    id = c.s("id"),
+                    txId = c.s("tx_id"),
+                    uri = c.s("uri"),
+                    mimeType = c.sn("mime_type"),
+                    displayName = c.sn("display_name"),
+                    createdAt = c.l("created_at")
+                )
+            }
+        }
+        return out
+    }
+
+    fun addTransactionAttachment(txId: String, uri: String, mimeType: String?, displayName: String?): TransactionAttachment {
+        val tx = transaction(txId) ?: throw IllegalArgumentException("Unknown transaction")
+        val item = TransactionAttachment(
+            id = UUID.randomUUID().toString(),
+            txId = txId,
+            uri = uri,
+            mimeType = mimeType,
+            displayName = displayName
+        )
+        writableDatabase.insertOrThrow("transaction_attachments", null, ContentValues().apply {
+            put("id", item.id)
+            put("tx_id", item.txId)
+            put("uri", item.uri)
+            put("mime_type", item.mimeType)
+            put("display_name", item.displayName)
+            put("created_at", item.createdAt)
+        })
+        audit("transaction", tx.id, "add_attachment", item.displayName ?: item.uri)
+        return item
+    }
+
+    fun deleteTransactionAttachment(id: String) {
+        val owner = readableDatabase.rawQuery(
+            "SELECT tx_id FROM transaction_attachments WHERE id=? LIMIT 1",
+            arrayOf(id)
+        ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        writableDatabase.delete("transaction_attachments", "id=?", arrayOf(id))
+        owner?.let { audit("transaction", it, "delete_attachment", id) }
+    }
+
     fun auditEvents(entityType: String, entityId: String, limit: Int = 100): List<AuditEvent> {
         val out = mutableListOf<AuditEvent>()
         readableDatabase.rawQuery(
@@ -1460,7 +1780,13 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         """.trimIndent(), arrayOf(txId)).use { c ->
             while (c.moveToNext()) out += normalize(c.getString(0))
         }
-        return out.sorted()
+        readableDatabase.rawQuery(
+            "SELECT normalized_name FROM deleted_tx_passengers WHERE tx_id=?",
+            arrayOf(txId)
+        ).use { c ->
+            while (c.moveToNext()) out += c.getString(0)
+        }
+        return out.distinct().sorted()
     }
 
     private fun hasMaterialChange(existing: Transaction, parsed: ParsedTransaction): Boolean {
