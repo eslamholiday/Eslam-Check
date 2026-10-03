@@ -2544,9 +2544,14 @@ private fun TransactionDetailDialog(
     var airlinePicker by remember { mutableStateOf(false) }
     var commissionEditor by remember { mutableStateOf(false) }
     var responsiblePicker by remember { mutableStateOf(false) }
+    var responsiblePickerTab by remember { mutableStateOf("OPERATION") }
+    var responsibleSearch by remember { mutableStateOf("") }
+    var pendingResponsible by remember { mutableStateOf<Passenger?>(null) }
+    var responsibilityConflicts by remember { mutableStateOf<List<Passenger>>(emptyList()) }
     var selectedPassenger by remember { mutableStateOf<Passenger?>(null) }
     var rawOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
+    var reviewSaving by remember(id) { mutableStateOf(false) }
     var attachments by remember(id) { mutableStateOf(vm.transactionAttachments(id)) }
     var receiptPreview by remember { mutableStateOf<TransactionAttachment?>(null) }
     var replaceAttachmentId by remember { mutableStateOf<String?>(null) }
