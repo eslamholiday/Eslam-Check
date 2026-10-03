@@ -1940,9 +1940,21 @@ private fun SettingsRoot(onOpen: (String) -> Unit) {
 @Composable
 private fun DeletedScreen(vm: MainViewModel, onBack: () -> Unit) {
     var rows by remember { mutableStateOf(vm.deletedPassengerLinks()) }
+    var search by remember { mutableStateOf("") }
+    var currencyFilter by remember { mutableStateOf<Currency?>(null) }
 
     fun refreshRows() {
         rows = vm.deletedPassengerLinks()
+    }
+
+    val visibleRows = remember(rows, search, currencyFilter) {
+        rows.filter { item ->
+            (currencyFilter == null || item.currency == currencyFilter) &&
+                (search.isBlank() ||
+                    item.passengerName.contains(search, true) ||
+                    item.operationNo.orEmpty().contains(search, true) ||
+                    item.documentNo.orEmpty().contains(search, true))
+        }
     }
 
     LazyColumn(
@@ -1957,7 +1969,33 @@ private fun DeletedScreen(vm: MainViewModel, onBack: () -> Unit) {
                 "حذف المسافر هنا يعني إخفاء ارتباطه من نفس رقم العملية ونفس العملة فقط. إعادة استيراد نفس الكشف لا تعيده، أما إذا ظهر في عملية جديدة برقم مختلف فيظهر طبيعيًا."
             )
         }
-        if (rows.isEmpty()) {
+        item {
+            OutlinedTextField(
+                search,
+                { search = it },
+                Modifier.fillMaxWidth(),
+                label = { Text("بحث بالاسم / العملية / التذكرة") },
+                leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                singleLine = true
+            )
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(
+                    selected = currencyFilter == null,
+                    onClick = { currencyFilter = null },
+                    label = { Text("الكل") }
+                )
+                Currency.entries.forEach { cur ->
+                    FilterChip(
+                        selected = currencyFilter == cur,
+                        onClick = { currencyFilter = cur },
+                        label = { Text(cur.name) }
+                    )
+                }
+            }
+        }
+        if (visibleRows.isEmpty()) {
             item {
                 Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
                     Text(
@@ -1968,19 +2006,55 @@ private fun DeletedScreen(vm: MainViewModel, onBack: () -> Unit) {
                 }
             }
         } else {
-            items(rows, key = { it.id }) { item ->
+            items(visibleRows, key = { it.id }) { item ->
                 Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
                     Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text(item.passengerName, fontWeight = FontWeight.Bold)
                         Text(
-                            item.currency.name + " • #" + (item.operationNo ?: "بدون رقم عملية"),
+                            listOfNotNull(
+                                item.txType?.let(::labelFor),
+                                item.currency.name,
+                                "#" + (item.operationNo ?: "بدون رقم عملية")
+                            ).joinToString(" • "),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 12.sp
+                        )
+                        Text(
+                            "حُذف: " + java.text.SimpleDateFormat(
+                                "yyyy-MM-dd HH:mm",
+                                java.util.Locale.US
+                            ).format(java.util.Date(item.deletedAt)) +
+                                (item.transactionDate?.let { " • تاريخ العملية: " + it } ?: ""),
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         item.documentNo?.takeIf { it.isNotBlank() }?.let {
                             Text("Ticket: " + it, fontSize = 12.sp)
                         }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End)
+                        ) {
+                            val sameOperationCount = rows.count { other ->
+                                if (!item.operationNo.isNullOrBlank()) {
+                                    other.currency == item.currency && other.operationNo == item.operationNo
+                                } else {
+                                    other.txId == item.txId
+                                }
+                            }
+                            if (sameOperationCount > 1) {
+                                FilledTonalButton(
+                                    onClick = {
+                                        vm.restoreDeletedPassengerLinksForOperationImmediate(item.id)
+                                        refreshRows()
+                                        vm.refresh()
+                                    }
+                                ) {
+                                    Icon(Icons.Rounded.RestorePage, null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("استرداد الكل")
+                                }
+                            }
                             OutlinedButton(
                                 onClick = {
                                     if (vm.restoreDeletedPassengerLinkImmediate(item.id)) {
