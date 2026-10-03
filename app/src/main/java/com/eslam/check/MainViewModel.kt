@@ -185,6 +185,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun auditEvents(entityType: String, entityId: String): List<AuditEvent> = db.auditEvents(entityType, entityId)
     fun airlineNames(): List<String> = db.airlineNames()
     fun ruleForTransaction(tx: Transaction): CommissionRule? = db.ruleForTransaction(tx)
+    fun visaPriceRules(): List<VisaPriceRule> = db.visaPriceRules()
+    fun visaPriceFor(country: String?, visaType: String?, currency: Currency): VisaPriceRule? =
+        db.visaPriceFor(country, visaType, currency)
 
     fun updateTransaction(tx: Transaction) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -403,9 +406,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun saveVisaPriceRule(rule: VisaPriceRule) {
+        viewModelScope.launch(Dispatchers.IO) {
+            db.saveVisaPriceRule(rule)
+            _message.value = "تم حفظ سعر الفيزا الافتراضي"
+            _settingsRevision.value = _settingsRevision.value + 1
+        }
+    }
+
     fun setting(key: String, default: String = "") = db.setting(key, default)
     fun setSetting(key: String, value: String) {
-        db.setSetting(key, value)
+        val stored = if (key == "issuer_whatsapp" || key == "accountant_whatsapp") {
+            normalizeIraqPhoneForStorage(value).orEmpty()
+        } else value
+        db.setSetting(key, stored)
         _settingsRevision.value = _settingsRevision.value + 1
     }
 }
