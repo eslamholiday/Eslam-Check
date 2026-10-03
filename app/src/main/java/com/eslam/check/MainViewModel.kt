@@ -373,6 +373,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteTransactionAttachmentImmediate(id: String) = db.deleteTransactionAttachment(id)
 
     fun restoreDeletedPassengerLinkImmediate(id: String): Boolean = db.restoreDeletedPassengerLink(id)
+    fun restoreDeletedPassengerLinksForOperationImmediate(id: String): Int =
+        db.restoreDeletedPassengerLinksForOperation(id)
 
     fun deletePassengerAliasImmediate(id: String): Boolean = db.deletePassengerAlias(id)
 
