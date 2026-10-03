@@ -175,6 +175,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun transactionAttachments(id: String): List<TransactionAttachment> = db.transactionAttachments(id)
     fun deletedPassengerLinks(): List<DeletedPassengerLink> = db.deletedPassengerLinks()
     fun passengerAliases(id: String): List<PassengerAlias> = db.passengerAliases(id)
+    fun responsibilityConflictsForTransaction(txId: String, responsibleId: String): List<Passenger> =
+        db.responsibilityConflictsForTransaction(txId, responsibleId)
+    fun responsibilityConflictsForPnr(pnr: String, responsibleId: String): List<Passenger> =
+        db.responsibilityConflictsForPnr(pnr, responsibleId)
+    fun responsibilityConflictsForPassenger(passengerId: String, responsibleId: String): List<Passenger> =
+        db.responsibilityConflictsForPassenger(passengerId, responsibleId)
     fun mergedPassengers(id: String): List<Passenger> = db.mergedPassengers(id)
     fun auditEvents(entityType: String, entityId: String): List<AuditEvent> = db.auditEvents(entityType, entityId)
     fun airlineNames(): List<String> = db.airlineNames()
@@ -188,6 +194,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 db.learnClassification(old.rawText, tx.type)
             }
             refresh()
+        }
+    }
+
+    fun saveAndReview(tx: Transaction, onComplete: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val success = try {
+                withContext(Dispatchers.IO) {
+                    val old = db.transaction(tx.id)
+                    val reviewed = db.saveAndMarkReviewed(tx)
+                    if (old?.type == TxType.UNKNOWN && reviewed.type != TxType.UNKNOWN) {
+                        db.learnClassification(old.rawText, reviewed.type)
+                    }
+                    if (old?.airline != reviewed.airline) {
+                        db.setAirlineForTransaction(reviewed.id, reviewed.airline, learnPrefix = true)
+                    }
+                    true
+                }
+            } catch (e: Exception) {
+                _message.value = "تعذر تثبيت المراجعة: " + (e.message ?: "خطأ غير معروف")
+                false
+            }
+            if (success) refresh()
+            onComplete(success)
         }
     }
 
@@ -258,23 +287,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun assignResponsible(passengerId: String, responsibleId: String?, relation: String? = null) {
+    fun assignResponsible(passengerId: String, responsibleId: String?, relation: String? = null, forceConflicts: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
-            db.assignResponsible(passengerId, responsibleId, relation)
+            val conflicts = db.assignResponsible(passengerId, responsibleId, relation, forceConflicts)
+            if (conflicts.isNotEmpty()) {
+                _message.value = "يوجد تعارض مع مسؤول آخر؛ اختر اعتماد المسؤول الجديد إذا أردت نقل المجموعة."
+            }
             refresh()
         }
     }
 
-    fun assignResponsibleForTransaction(txId: String, responsibleId: String) {
+    fun assignResponsibleForTransaction(txId: String, responsibleId: String, forceConflicts: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
-            db.assignResponsibleForTransaction(txId, responsibleId)
+            val conflicts = db.assignResponsibleForTransaction(txId, responsibleId, forceConflicts)
+            if (conflicts.isNotEmpty()) {
+                _message.value = "يوجد تعارض مع مسؤول آخر."
+            }
             refresh()
         }
     }
 
-    fun assignResponsibleForPnr(pnr: String, responsibleId: String) {
+    fun assignResponsibleForPnr(pnr: String, responsibleId: String, forceConflicts: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
-            db.assignResponsibleForPnr(pnr, responsibleId)
+            val conflicts = db.assignResponsibleForPnr(pnr, responsibleId, forceConflicts)
+            if (conflicts.isNotEmpty()) {
+                _message.value = "يوجد تعارض مع مسؤول آخر."
+            }
             refresh()
         }
     }
@@ -308,6 +346,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteTransactionAttachmentImmediate(id: String) = db.deleteTransactionAttachment(id)
 
     fun restoreDeletedPassengerLinkImmediate(id: String): Boolean = db.restoreDeletedPassengerLink(id)
+
+    fun deletePassengerAliasImmediate(id: String): Boolean = db.deletePassengerAlias(id)
 
     fun addPassengerFile(passengerId: String, uri: String, mimeType: String?, displayName: String?) {
         viewModelScope.launch(Dispatchers.IO) {
