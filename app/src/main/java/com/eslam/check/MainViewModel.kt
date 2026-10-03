@@ -209,13 +209,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (old?.airline != reviewed.airline) {
                         db.setAirlineForTransaction(reviewed.id, reviewed.airline, learnPrefix = true)
                     }
+                    _transactions.value = db.transactions(limit = 1000)
+                    _passengers.value = db.allPassengers(500)
+                    _stats.value = db.dashboardStats()
+                    _rules.value = db.rules()
+                    _airlines.value = db.airlines()
                     true
                 }
             } catch (e: Exception) {
                 _message.value = "تعذر تثبيت المراجعة: " + (e.message ?: "خطأ غير معروف")
                 false
             }
-            if (success) refresh()
             onComplete(success)
         }
     }
