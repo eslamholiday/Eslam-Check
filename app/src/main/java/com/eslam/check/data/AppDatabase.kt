@@ -1556,17 +1556,35 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
         audit("passenger", canonicalId, "edit", person.name)
     }
 
-    fun assignResponsible(passengerId: String, responsibleId: String?, relation: String? = null) {
+    fun assignResponsible(
+        passengerId: String,
+        responsibleId: String?,
+        relation: String? = null,
+        forceConflicts: Boolean = false
+    ): List<Passenger> {
         val canonicalPassenger = resolveCanonicalPassengerId(passengerId)
         val canonicalResponsible = responsibleId?.let(::resolveCanonicalPassengerId)
-        writableDatabase.update("passengers", ContentValues().apply {
-            put("responsible_id", canonicalResponsible)
-            put("responsible_relation", relation)
-        }, "id=?", arrayOf(canonicalPassenger))
-        if (canonicalResponsible != null) {
-            writableDatabase.update("passengers", ContentValues().apply { put("is_responsible", 1) }, "id=?", arrayOf(canonicalResponsible))
+        if (canonicalResponsible == null) {
+            writableDatabase.update("passengers", ContentValues().apply {
+                putNull("responsible_id")
+                put("responsible_relation", relation)
+            }, "id=?", arrayOf(canonicalPassenger))
+            audit("passenger", canonicalPassenger, "assign_responsible", null)
+            return emptyList()
         }
-        audit("passenger", canonicalPassenger, "assign_responsible", canonicalResponsible)
+
+        val conflicts = assignResponsibleTransitively(
+            seedIds = listOf(canonicalPassenger),
+            responsibleId = canonicalResponsible,
+            forceConflicts = forceConflicts
+        )
+        if (conflicts.isEmpty()) {
+            writableDatabase.update("passengers", ContentValues().apply {
+                put("responsible_relation", relation)
+            }, "id=?", arrayOf(canonicalPassenger))
+            audit("passenger", canonicalPassenger, "assign_responsible", canonicalResponsible)
+        }
+        return conflicts
     }
 
     fun dependentsOf(responsibleId: String): List<Passenger> {
@@ -1723,6 +1741,9 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "eslam_check.db"
 
     fun responsibilityConflictsForTransaction(txId: String, responsibleId: String): List<Passenger> =
         responsibilityConflicts(passengersFor(txId).map { it.id }, responsibleId)
+
+    fun responsibilityConflictsForPassenger(passengerId: String, responsibleId: String): List<Passenger> =
+        responsibilityConflicts(listOf(passengerId), responsibleId)
 
     fun responsibilityConflictsForPnr(pnr: String, responsibleId: String): List<Passenger> {
         val txIds = transactions(search = pnr, limit = 500)
