@@ -2358,7 +2358,13 @@ private fun ManualTransactionDialog(vm: MainViewModel, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: () -> Unit, onNext: (String) -> Unit) {
+private fun TransactionDetailDialog(
+    vm: MainViewModel,
+    id: String,
+    navigationIds: List<String> = emptyList(),
+    onDismiss: () -> Unit,
+    onNext: (String) -> Unit
+) {
     val all by vm.transactions.collectAsState()
     val rules by vm.rules.collectAsState()
     val airlines by vm.airlines.collectAsState()
@@ -2366,7 +2372,7 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
     val tx = all.firstOrNull { it.id == id } ?: vm.transaction(id) ?: return
     val details = vm.txPassengerDetails(id)
     val context = LocalContext.current
-    var edit by remember(id, tx.airline, tx.referenceTotal, tx.type, tx.note, tx.externalLink) { mutableStateOf(tx) }
+    var edit by remember(id, tx.airline, tx.referenceTotal, tx.type, tx.note, tx.externalLink, tx.reviewState) { mutableStateOf(tx) }
     var airlinePicker by remember { mutableStateOf(false) }
     var commissionEditor by remember { mutableStateOf(false) }
     var responsiblePicker by remember { mutableStateOf(false) }
@@ -2393,7 +2399,13 @@ private fun TransactionDetailDialog(vm: MainViewModel, id: String, onDismiss: ()
     val sourceGross = details.mapNotNull { it.amount }.sum()
     val sourceEquationDiff = if (edit.type == TxType.TICKET && sourceGross > 0.0) (sourceGross - edit.discount) - edit.amount else null
     val related = vm.relatedOperations(id)
-    val next = all.firstOrNull { it.reviewState != ReviewState.REVIEWED && it.id != id }
+    val queueIndex = navigationIds.indexOf(id)
+    val smartNextId = if (queueIndex >= 0) navigationIds.getOrNull(queueIndex + 1) else null
+    val allIndex = all.indexOfFirst { it.id == id }
+    val plainNextId = smartNextId ?: if (navigationIds.isEmpty() && allIndex >= 0) all.getOrNull(allIndex + 1)?.id else null
+    val reviewNextId = smartNextId ?: if (navigationIds.isEmpty() && allIndex >= 0) {
+        all.drop(allIndex + 1).firstOrNull { it.reviewState != ReviewState.REVIEWED }?.id
+    } else null
     val responsible = vm.responsibleForTransaction(id)
     val pnrPassengers = remember(id, related, allPassengers) {
         val ids = linkedSetOf<String>()
