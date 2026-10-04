@@ -1150,6 +1150,11 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
     fun rebuildFareMemory(): Int {
         val db = writableDatabase
         db.delete("fare_memory", "pinned=0 AND blocked=0", null)
+        db.update("fare_memory", ContentValues().apply {
+            put("sample_count", 0)
+            putNull("first_seen_date")
+            putNull("last_seen_date")
+        }, "pinned=1 AND blocked=0", null)
         var learned = 0
         val txIds = mutableListOf<String>()
         db.rawQuery(
@@ -1206,22 +1211,34 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
 
         val now = System.currentTimeMillis()
         if (existingId != null) {
-            val row = readableDatabase.rawQuery(
-                "SELECT total_amount,sample_count,first_seen_date FROM fare_memory WHERE id=?",
+            var previousTotal = 0.0
+            var previousCount = 0
+            var previousFirst: String? = null
+            var previousLast: String? = null
+            val found = readableDatabase.rawQuery(
+                "SELECT total_amount,sample_count,first_seen_date,last_seen_date FROM fare_memory WHERE id=?",
                 arrayOf(existingId)
             ).use { c ->
-                if (!c.moveToFirst()) null else Triple(c.getDouble(0), c.getInt(1), if (c.isNull(2)) null else c.getString(2))
-            } ?: return false
-            val nextCount = row.second + 1
-            val averagedTotal = ((row.first * row.second) + total) / nextCount.toDouble()
+                if (!c.moveToFirst()) false else {
+                    previousTotal = c.getDouble(0)
+                    previousCount = c.getInt(1)
+                    previousFirst = if (c.isNull(2)) null else c.getString(2)
+                    previousLast = if (c.isNull(3)) null else c.getString(3)
+                    true
+                }
+            }
+            if (!found) return false
+            val nextCount = previousCount + 1
+            val averagedTotal = if (previousCount <= 0) total
+                else ((previousTotal * previousCount) + total) / nextCount.toDouble()
             writableDatabase.update("fare_memory", ContentValues().apply {
                 put("airline_label", tx.airline!!.trim())
                 put("route_label", tx.route!!.trim())
                 put("total_amount", averagedTotal)
                 put("base_fare", base)
                 put("sample_count", nextCount)
-                put("first_seen_date", earlierDate(row.third, tx.transactionDate))
-                put("last_seen_date", laterDate(null, tx.transactionDate))
+                put("first_seen_date", earlierDate(previousFirst, tx.transactionDate))
+                put("last_seen_date", laterDate(previousLast, tx.transactionDate))
                 put("last_tx_id", tx.id)
                 put("last_operation_no", tx.operationNo)
                 put("updated_at", now)
