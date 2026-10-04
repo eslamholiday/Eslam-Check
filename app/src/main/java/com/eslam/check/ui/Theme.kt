@@ -3,9 +3,16 @@ package com.eslam.check.ui
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
+import androidx.compose.material3.Shapes
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -17,6 +24,22 @@ val Good = Color(0xFF2E7D32)
 val Warn = Color(0xFFB26A00)
 val Bad = Color(0xFFB3261E)
 val Mystery = Color(0xFF6A4C93)
+
+private val MoneyLight = lightColorScheme(
+    primary = Color(0xFF34638A), onPrimary = Color.White,
+    primaryContainer = Color(0xFFD9E8F8), onPrimaryContainer = Navy,
+    secondary = Color(0xFF48758F), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFD9E8F8), onSecondaryContainer = Navy,
+    tertiary = Color(0xFF9870B7), tertiaryContainer = Color(0xFFEFE5F8),
+    onTertiaryContainer = Color(0xFF573E70),
+    background = Color(0xFFF5F6FB), onBackground = Color(0xFF252C32),
+    surface = Color.White, onSurface = Color(0xFF252C32),
+    surfaceVariant = Color(0xFFEEF2F6), onSurfaceVariant = Color(0xFF5C6974),
+    surfaceTint = Color.Transparent, outline = Color(0xFF8C99A5), outlineVariant = Color(0xFFE1E5EB),
+    surfaceContainer = Color(0xFFEDF0F6), surfaceContainerLow = Color.White,
+    surfaceContainerHigh = Color(0xFFE9EEF4), surfaceContainerHighest = Color(0xFFE1E8F0),
+    error = Bad, onError = Color.White, errorContainer = Color(0xFFFCE5E3), onErrorContainer = Bad
+)
 
 private val NavyLight = lightColorScheme(
     primary = Navy,
@@ -82,7 +105,7 @@ private val Sand = lightColorScheme(
 
 @Composable
 fun EslamCheckTheme(
-    preset: String = "NAVY",
+    preset: String = "MONEY",
     customPrimary: String = "",
     customBackground: String = "",
     customSurface: String = "",
@@ -92,6 +115,7 @@ fun EslamCheckTheme(
     content: @Composable () -> Unit
 ) {
     val base = when (preset.uppercase()) {
+        "MONEY" -> MoneyLight
         "MIDNIGHT" -> Midnight
         "EMERALD" -> Emerald
         "GRAPHITE" -> Graphite
@@ -108,6 +132,14 @@ fun EslamCheckTheme(
         onSurface = text
     )
 
+    val view = LocalView.current
+    if (!view.isInEditMode) SideEffect {
+        val window = (view.context as? android.app.Activity)?.window
+        if (window != null) WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = scheme.background.luminance() > 0.5f
+            isAppearanceLightNavigationBars = scheme.background.luminance() > 0.5f
+        }
+    }
     val family = when (fontChoice.uppercase()) {
         "SERIF" -> FontFamily.Serif
         "MONO" -> FontFamily.Monospace
@@ -125,7 +157,10 @@ fun EslamCheckTheme(
         labelMedium = TextStyle(fontFamily = family, fontSize = (12f * scale).sp),
         labelSmall = TextStyle(fontFamily = family, fontSize = (11f * scale).sp)
     )
-    MaterialTheme(colorScheme = scheme, typography = typography, content = content)
+    MaterialTheme(colorScheme = scheme, typography = typography,
+        shapes = Shapes(extraSmall = RoundedCornerShape(8.dp), small = RoundedCornerShape(12.dp),
+            medium = RoundedCornerShape(18.dp), large = RoundedCornerShape(24.dp), extraLarge = RoundedCornerShape(28.dp)),
+        content = content)
 }
 
 fun colorFromHex(value: String): Color? {
@@ -138,3 +173,4 @@ fun colorFromHex(value: String): Color? {
         null
     }
 }
+

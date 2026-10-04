@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   pull_request:
   push:
-    branches: [ main, bridge-v0.2, v0.3-audit-upgrade, v0.4-smart-audit, v0.4.1-passenger-merge, v0.4.2-review-flow, v0.4.3-receipts-smart-delete, v0.4.4-responsibility-review-fix, v0.4.5-stars-commission-review-cards, v0.4.6-phone-visa-ux ]
+    branches: [ main, bridge-v0.2, v0.3-audit-upgrade, v0.4-smart-audit, v0.4.1-passenger-merge, v0.4.2-review-flow, v0.4.3-receipts-smart-delete, v0.4.4-responsibility-review-fix, v0.4.5-stars-commission-review-cards, v0.4.6-phone-visa-ux, v0.5.0-periods-money-theme ]
 
 jobs:
   build:
@@ -30,8 +30,9 @@ jobs:
         with:
           gradle-version: '8.11.1'
       - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace
+        run: gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: Eslam-Check-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+

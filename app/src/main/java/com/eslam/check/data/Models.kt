@@ -177,7 +177,9 @@ data class VisaPriceRule(
     val currency: Currency = Currency.USD,
     val active: Boolean = true,
     val note: String? = null,
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val effectiveFrom: String? = null,
+    val effectiveTo: String? = null
 )
 
 data class ResponsibleContact(
@@ -225,6 +227,9 @@ data class CommissionRule(
     val reverseOnly: Boolean = false,
     val direction: String = "ANY",
     val effectiveFrom: String? = null,
+    val effectiveTo: String? = null,
+    val destination: String? = null,
+    val currency: Currency? = null,
     val learned: Boolean = false,
     val active: Boolean = true,
     val note: String? = null,
@@ -318,3 +323,4 @@ data class BridgeParseResult(
         it.type == TxType.TICKET && it.currency == Currency.USD && it.airline.isNullOrBlank()
     }
 }
+

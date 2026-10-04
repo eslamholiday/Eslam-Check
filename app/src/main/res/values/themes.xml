@@ -2,10 +2,11 @@
     <style name="Theme.EslamCheck" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#FFFFFF</item>
-        <item name="android:statusBarColor">#FFFFFF</item>
+        <item name="android:navigationBarColor">#F5F6FB</item>
+        <item name="android:statusBarColor">#F5F6FB</item>
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowNoTitle">true</item>
-        <item name="android:colorAccent">#D4A84F</item>
+        <item name="android:colorAccent">#34638A</item>
     </style>
 </resources>
+

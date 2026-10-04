@@ -7,12 +7,13 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
+import com.eslam.check.util.RulePeriods
 
-class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 9) {
+class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 10) {
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         val currentVersion = db.version
-        if (currentVersion in 1 until 9) {
+        if (currentVersion in 1 until 10) {
             try {
                 db.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
                     if (cursor.moveToFirst()) { /* force checkpoint result */ }
@@ -20,7 +21,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             } catch (_: Exception) { }
             try {
                 val backupDir = java.io.File(context.filesDir, "backups").apply { mkdirs() }
-                val backup = java.io.File(backupDir, "preupgrade-v" + currentVersion + "-to-v9.db")
+                val backup = java.io.File(backupDir, "preupgrade-v" + currentVersion + "-to-v10.db")
                 val source = context.getDatabasePath("eslam_check.db")
                 if (source.exists() && !backup.exists()) source.copyTo(backup, overwrite = false)
             } catch (_: Exception) { }
@@ -196,6 +197,9 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
                 reverse_only INTEGER NOT NULL DEFAULT 0,
                 direction TEXT NOT NULL DEFAULT 'ANY',
                 effective_from TEXT,
+                effective_to TEXT,
+                destination TEXT,
+                rule_currency TEXT,
                 learned INTEGER NOT NULL DEFAULT 0,
                 active INTEGER NOT NULL DEFAULT 1,
                 note TEXT,
@@ -224,6 +228,8 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
 
         db.execSQL("""
             CREATE TABLE visa_price_rules(
+                effective_from TEXT,
+                effective_to TEXT,
                 id TEXT PRIMARY KEY,
                 country TEXT NOT NULL,
                 visa_type TEXT,
@@ -376,7 +382,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             putSettingIfMissing(db, "visa_link", "https://docs.google.com/spreadsheets/d/1NwV7H_9AGEWunvE6rY5d-U4qi6lOkME23oawFA2jx_Q/edit?usp=drivesdk")
             putSettingIfMissing(db, "accountant_name", "المحاسب")
             putSettingIfMissing(db, "accountant_whatsapp", "")
-            putSettingIfMissing(db, "theme_preset", "NAVY")
+            putSettingIfMissing(db, "theme_preset", "MONEY")
             putSettingIfMissing(db, "theme_primary", "")
             putSettingIfMissing(db, "theme_background", "")
             putSettingIfMissing(db, "theme_surface", "")
@@ -544,6 +550,14 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
                 }
             }
         }
+        if (oldVersion < 10) {
+            db.execSQL("ALTER TABLE commission_rules ADD COLUMN effective_to TEXT")
+            db.execSQL("ALTER TABLE commission_rules ADD COLUMN destination TEXT")
+            db.execSQL("ALTER TABLE commission_rules ADD COLUMN rule_currency TEXT")
+            db.execSQL("ALTER TABLE visa_price_rules ADD COLUMN effective_from TEXT")
+            db.execSQL("ALTER TABLE visa_price_rules ADD COLUMN effective_to TEXT")
+            putSetting(db, "theme_preset", "MONEY")
+        }
     }
 
     private fun seedDefaults(db: SQLiteDatabase) {
@@ -562,7 +576,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
         putSetting(db, "visa_link", "https://docs.google.com/spreadsheets/d/1NwV7H_9AGEWunvE6rY5d-U4qi6lOkME23oawFA2jx_Q/edit?usp=drivesdk")
         putSetting(db, "accountant_name", "المحاسب")
         putSetting(db, "accountant_whatsapp", "")
-        putSetting(db, "theme_preset", "NAVY")
+        putSetting(db, "theme_preset", "MONEY")
         putSetting(db, "theme_primary", "")
         putSetting(db, "theme_background", "")
         putSetting(db, "theme_surface", "")
@@ -686,7 +700,8 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
                     currency = Currency.valueOf(cursor.s("currency")),
                     active = cursor.i("active") == 1,
                     note = cursor.sn("note"),
-                    updatedAt = cursor.l("updated_at")
+                    updatedAt = cursor.l("updated_at"),
+                    effectiveFrom = cursor.sn("effective_from"), effectiveTo = cursor.sn("effective_to")
                 )
             }
         }
@@ -694,6 +709,9 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
     }
 
     fun saveVisaPriceRule(rule: VisaPriceRule): VisaPriceRule {
+        require(RulePeriods.validRange(rule.effectiveFrom, rule.effectiveTo)) { "الفترة غير صحيحة" }
+        val canonicalRule = rule.copy(country = canonicalVisaCountry(rule.country))
+        require(visaPriceRules().none { RulePeriods.conflicts(it, canonicalRule) }) { "يوجد سعر متداخل لنفس الدولة والنوع والعملة؛ عدّل الفترة أولًا" }
         val country = canonicalVisaCountry(rule.country)
         val cleanType = rule.visaType?.trim()?.takeIf { it.isNotBlank() }
         val saved = rule.copy(
@@ -705,6 +723,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
         )
         writableDatabase.insertWithOnConflict("visa_price_rules", null, ContentValues().apply {
             put("id", saved.id)
+            put("effective_from", saved.effectiveFrom); put("effective_to", saved.effectiveTo)
             put("country", saved.country)
             put("visa_type", saved.visaType)
             put("price", saved.price)
@@ -717,12 +736,9 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
         return saved
     }
 
-    fun visaPriceFor(country: String?, visaType: String?, currency: Currency): VisaPriceRule? {
+    fun visaPriceFor(country: String?, visaType: String?, currency: Currency, date: String?): VisaPriceRule? {
         val canonical = country?.takeIf { it.isNotBlank() }?.let(::canonicalVisaCountry) ?: return null
-        val type = visaType?.trim().orEmpty()
-        val rules = visaPriceRules().filter { it.active && it.country.equals(canonical, true) && it.currency == currency && it.price != null }
-        return rules.firstOrNull { !it.visaType.isNullOrBlank() && type.contains(it.visaType!!, true) }
-            ?: rules.firstOrNull { it.visaType.isNullOrBlank() }
+        return RulePeriods.visa(visaPriceRules(), canonical, visaType, currency, date)
     }
 
     fun canonicalVisaCountry(value: String): String {
@@ -1613,20 +1629,49 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             if (state == ReviewState.REVIEWED) {
                 put("reviewed_at", System.currentTimeMillis())
                 put("changed_after_review", 0)
-                if (tx?.commissionRuleSnapshot.isNullOrBlank() && tx?.type == TxType.TICKET) {
-                    ruleForTransaction(tx)?.let { put("commission_rule_snapshot", ruleSnapshot(it)) }
-                }
-            } else putNull("reviewed_at")
+                if (tx != null) snapshotFor(tx)?.let { put("commission_rule_snapshot", it) }
+            } else {
+                putNull("reviewed_at")
+                putNull("commission_rule_snapshot")
+            }
         }
         writableDatabase.update("transactions", values, "id=?", arrayOf(id))
         audit("transaction", id, "review", state.name)
     }
 
+    private fun snapshotFor(tx: Transaction): String? {
+        if (tx.reviewState == ReviewState.REVIEWED && !tx.commissionRuleSnapshot.isNullOrBlank()) return tx.commissionRuleSnapshot
+        return when (tx.type) {
+            TxType.TICKET -> ruleForTransaction(tx)?.let(::ruleSnapshot)
+            TxType.VISA -> {
+                val type = txPassengerDetails(tx.id).firstOrNull { !it.product.isNullOrBlank() }?.product
+                visaPriceFor(tx.visaCountry, type, tx.currency, tx.transactionDate)?.let { r ->
+                    "VISA:" + org.json.JSONObject().apply {
+                        put("country", r.country); put("type", r.visaType.orEmpty()); put("price", r.price)
+                        put("currency", r.currency.name); put("from", r.effectiveFrom.orEmpty()); put("to", r.effectiveTo.orEmpty())
+                    }.toString()
+                }
+            }
+            else -> null
+        }
+    }
+
+    fun visaPriceForTransaction(tx: Transaction, type: String?): VisaPriceRule? {
+        val snapshot = tx.commissionRuleSnapshot
+        if (tx.reviewState == ReviewState.REVIEWED && snapshot?.startsWith("VISA:") == true) {
+            try {
+                val obj = org.json.JSONObject(snapshot.removePrefix("VISA:"))
+                return VisaPriceRule(id = "snapshot", country = obj.getString("country"), visaType = obj.optString("type").ifBlank { null },
+                    price = obj.getDouble("price"), currency = Currency.valueOf(obj.getString("currency")),
+                    effectiveFrom = obj.optString("from").ifBlank { null }, effectiveTo = obj.optString("to").ifBlank { null })
+            } catch (_: Exception) { }
+        }
+        return visaPriceFor(tx.visaCountry, type, tx.currency, tx.transactionDate)
+    }
+
     fun saveAndMarkReviewed(tx: Transaction): Transaction {
         val now = System.currentTimeMillis()
-        val snapshot = tx.commissionRuleSnapshot ?: if (tx.type == TxType.TICKET) {
-            ruleForTransaction(tx)?.let(::ruleSnapshot)
-        } else null
+        val snapshot = snapshotFor(tx)
         val reviewed = tx.copy(
             reviewState = ReviewState.REVIEWED,
             reviewedAt = now,
@@ -1676,11 +1721,12 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
 
     fun rules(): List<CommissionRule> {
         val out = mutableListOf<CommissionRule>()
-        readableDatabase.rawQuery("SELECT * FROM commission_rules WHERE active=1 ORDER BY airline", null).use { c ->
+        readableDatabase.rawQuery("SELECT * FROM commission_rules ORDER BY airline", null).use { c ->
             while (c.moveToNext()) out += CommissionRule(
                 id = c.s("id"), airline = c.s("airline"), kind = RuleKind.valueOf(c.s("kind")), value = c.d("value"),
                 roundTripValue = c.dn("round_trip_value"), reverseOnly = c.i("reverse_only") == 1,
                 direction = c.sn("direction") ?: "ANY", effectiveFrom = c.sn("effective_from"),
+                effectiveTo = c.sn("effective_to"), destination = c.sn("destination"), currency = c.sn("rule_currency")?.let { Currency.valueOf(it) },
                 learned = c.i("learned") == 1, active = c.i("active") == 1, note = c.sn("note"), updatedAt = c.l("updated_at")
             )
         }
@@ -1688,10 +1734,12 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
     }
 
     fun saveRule(rule: CommissionRule) {
+        require(RulePeriods.validRange(rule.effectiveFrom, rule.effectiveTo)) { "الفترة غير صحيحة" }
+        require(rules().none { RulePeriods.conflicts(it, rule) }) { "توجد قاعدة متداخلة بنفس الخط والوجهة والاتجاه والعملة؛ عدّل الفترة أولًا" }
         writableDatabase.insertWithOnConflict("commission_rules", null, ContentValues().apply {
             put("id", rule.id); put("airline", rule.airline); put("kind", rule.kind.name); put("value", rule.value)
             put("round_trip_value", rule.roundTripValue); put("reverse_only", if (rule.reverseOnly) 1 else 0)
-            put("direction", rule.direction); put("effective_from", rule.effectiveFrom); put("learned", if (rule.learned) 1 else 0)
+            put("direction", rule.direction); put("effective_from", rule.effectiveFrom); put("effective_to", rule.effectiveTo); put("destination", rule.destination); put("rule_currency", rule.currency?.name); put("learned", if (rule.learned) 1 else 0)
             put("active", if (rule.active) 1 else 0); put("note", rule.note); put("updated_at", rule.updatedAt)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -2244,19 +2292,25 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
     }
 
     fun ruleForTransaction(tx: Transaction): CommissionRule? {
-        val airline = tx.airline ?: return null
-        val candidates = rules().filter { it.airline.equals(airline, true) }
-            .filter { r -> r.effectiveFrom.isNullOrBlank() || tx.transactionDate.isNullOrBlank() || r.effectiveFrom <= tx.transactionDate }
-        val reverse = isReverseRoute(tx.route)
-        return candidates
-            .filter { r -> r.direction == "ANY" || (r.direction == "REVERSE" && reverse) || (r.direction == "NORMAL" && !reverse) }
-            .maxByOrNull { it.effectiveFrom.orEmpty() }
-            ?: candidates.maxByOrNull { it.effectiveFrom.orEmpty() }
+        if (tx.reviewState == ReviewState.REVIEWED && !tx.commissionRuleSnapshot.isNullOrBlank()) {
+            val fields = tx.commissionRuleSnapshot.split("~")
+            if (fields.size >= 7) {
+                try {
+                    return CommissionRule(id = "snapshot", airline = fields[0], kind = RuleKind.valueOf(fields[1]),
+                        value = fields[2].toDouble(), roundTripValue = fields[3].toDoubleOrNull(),
+                        direction = fields[4], effectiveFrom = fields[5].ifBlank { null }, note = fields[6].ifBlank { null },
+                        effectiveTo = fields.getOrNull(7)?.ifBlank { null }, destination = fields.getOrNull(8)?.ifBlank { null },
+                        currency = fields.getOrNull(9)?.takeIf { it.isNotBlank() }?.let { Currency.valueOf(it) })
+                } catch (_: Exception) { }
+            }
+        }
+        return RulePeriods.commission(rules(), tx.airline, tx.route, tx.currency, tx.transactionDate)
     }
 
     private fun ruleSnapshot(rule: CommissionRule): String = listOf(
         rule.airline, rule.kind.name, rule.value.toString(), rule.roundTripValue?.toString().orEmpty(),
-        rule.direction, rule.effectiveFrom.orEmpty(), rule.note.orEmpty()
+        rule.direction, rule.effectiveFrom.orEmpty(), rule.note.orEmpty().replace("~", " "),
+        rule.effectiveTo.orEmpty(), rule.destination.orEmpty(), rule.currency?.name.orEmpty()
     ).joinToString("~")
 
     private fun isReverseRoute(route: String?): Boolean {
@@ -2724,3 +2778,4 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             .digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 }
+

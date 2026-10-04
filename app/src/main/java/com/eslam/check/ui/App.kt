@@ -51,6 +51,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.eslam.check.MainViewModel
 import com.eslam.check.data.*
+import com.eslam.check.util.RulePeriods
 import com.eslam.check.util.CommissionEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -67,7 +68,7 @@ private enum class MainTab(val title: String) {
 @Composable
 fun EslamCheckApp(vm: MainViewModel) {
     val settingsRevision by vm.settingsRevision.collectAsState()
-    val preset = remember(settingsRevision) { vm.setting("theme_preset", "NAVY") }
+    val preset = remember(settingsRevision) { vm.setting("theme_preset", "MONEY") }
     val themeKey = preset.uppercase()
     val primary = remember(settingsRevision, themeKey) { vm.setting("theme_" + themeKey + "_primary", "") }
     val background = remember(settingsRevision, themeKey) { vm.setting("theme_" + themeKey + "_background", "") }
@@ -128,7 +129,7 @@ fun EslamCheckApp(vm: MainViewModel) {
                 }
             },
             floatingActionButton = {
-                Column(
+                if (tab != MainTab.MORE) Column(
                     horizontalAlignment = Alignment.End,
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -419,7 +420,9 @@ private fun BridgeImportDialog(vm: MainViewModel, onDismiss: () -> Unit) {
 
 @Composable
 private fun StatCard(title: String, value: Int, modifier: Modifier, onClick: () -> Unit) {
-    Surface(modifier.clickable(onClick = onClick), shape = RoundedCornerShape(16.dp), tonalElevation = 2.dp) {
+    Surface(modifier.clickable(onClick = onClick), shape = RoundedCornerShape(22.dp),
+        color = when { title.contains("غير") -> Color(0xFFFAEBDD); title.contains("مبهم") -> Color(0xFFEDE6F7); else -> Color(0xFFDEEDF8) },
+        contentColor = Navy) {
         Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(value.toString(), fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Text(title, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -567,8 +570,8 @@ private fun visaPriceAudit(
     val visaType = details.asSequence()
         .mapNotNull { it.product?.takeIf(String::isNotBlank) }
         .firstOrNull()
-    val rule = vm.visaPriceFor(tx.visaCountry, visaType, tx.currency)
-        ?: return VisaPriceAudit(null, statusText = "لا يوجد سعر فيزا افتراضي محفوظ", color = Warn)
+    val rule = vm.visaPriceForTransaction(tx, visaType)
+        ?: return VisaPriceAudit(null, statusText = "لا يوجد سعر مطابق لفترة الإصدار والنوع، أو توجد قواعد متداخلة", color = Warn)
     val price = rule.price
         ?: return VisaPriceAudit(rule, statusText = "السعر الافتراضي غير مدخل بعد", color = Warn)
 
@@ -2412,7 +2415,7 @@ private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
         item {
             SettingsInfoCard(
                 "نظام الخطوط",
-                "شركة الطيران تختار من قاعدة بيانات الخطوط ولا تكتب يدويًا. يمكن لكل خط امتلاك عدة قواعد حسب التاريخ أو الاتجاه."
+                "لكل خط عدة فترات حسب تاريخ الإصدار بالكشف والوجهة والاتجاه. يوم البداية والنهاية مشمولان. القواعد المؤرخة تحل محل العامة في نطاقها."
             )
         }
         item {
@@ -2441,7 +2444,10 @@ private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
                         Icon(Icons.Rounded.Edit, null, tint = MaterialTheme.colorScheme.primary)
                     }
                     Text(ruleLabel(rule), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (!rule.effectiveFrom.isNullOrBlank()) Text("سارية من: " + rule.effectiveFrom, fontSize = 12.sp)
+                    Text(RulePeriods.label(rule.effectiveFrom, rule.effectiveTo), fontSize = 13.sp)
+                    Text("الوجهة: " + (rule.destination ?: "الكل") + " • العملة: " + (rule.currency?.name ?: "الكل"), fontSize = 13.sp)
+                    Text(if (rule.active) "مفعّل" else "معطّل", color = if (rule.active) Good else Warn)
+                    TextButton(onClick = { editing = rule.copy(id = "new", effectiveFrom = null, effectiveTo = null) }) { Text("نسخ لفترة جديدة") }
                     if (rule.direction != "ANY") Text("الاتجاه: " + if (rule.direction == "REVERSE") "عكسي" else "طبيعي", fontSize = 12.sp)
                     rule.note?.takeIf { it.isNotBlank() }?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
@@ -2476,9 +2482,20 @@ private fun CommissionRuleDialog(
     var value by remember(initial.id) { mutableStateOf(if (initial.value == 0.0) "" else initial.value.toString()) }
     var roundTrip by remember(initial.id) { mutableStateOf(initial.roundTripValue?.toString().orEmpty()) }
     var effectiveFrom by remember(initial.id) { mutableStateOf(initial.effectiveFrom.orEmpty()) }
+    var effectiveTo by remember(initial.id) { mutableStateOf(initial.effectiveTo.orEmpty()) }
+    var destination by remember(initial.id) { mutableStateOf(initial.destination.orEmpty()) }
+    var currency by remember(initial.id) { mutableStateOf(initial.currency) }
+    var active by remember(initial.id) { mutableStateOf(initial.active) }
     var direction by remember(initial.id) { mutableStateOf(initial.direction) }
     var note by remember(initial.id) { mutableStateOf(initial.note.orEmpty()) }
-    val effectiveFromValid = effectiveFrom.isBlank() || Regex("""\d{4}-\d{2}-\d{2}""").matches(effectiveFrom)
+    val effectiveFromValid = RulePeriods.validRange(effectiveFrom, effectiveTo)
+    val candidate = initial.copy(airline = airline, direction = direction, reverseOnly = false,
+        effectiveFrom = effectiveFrom.ifBlank { null }, effectiveTo = effectiveTo.ifBlank { null },
+        destination = destination.trim().uppercase().ifBlank { null }, currency = currency, active = active)
+    val conflict = vm.rules.collectAsState().value.any { RulePeriods.conflicts(it, candidate) }
+    val amountValid = kind !in listOf(RuleKind.PERCENT_BASE, RuleKind.FIXED_PER_PASSENGER) ||
+        (value.toDoubleOrNull()?.let { it.isFinite() && it >= 0 && (kind != RuleKind.PERCENT_BASE || it <= 100) } == true)
+    val roundTripValid = roundTrip.isBlank() || (roundTrip.toDoubleOrNull()?.let { it.isFinite() && it >= 0 } == true)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -2533,17 +2550,27 @@ private fun CommissionRuleDialog(
                         }
                     }
                 }
+                item { PeriodDateField("من تاريخ الإصدار", effectiveFrom) { effectiveFrom = it } }
+                item { PeriodDateField("إلى تاريخ الإصدار (اختياري)", effectiveTo) { effectiveTo = it } }
+                item { Text("تُحسب حسب تاريخ الإصدار في الكشف، ويُشمل يوما البداية والنهاية.", fontSize = 13.sp) }
                 item {
-                    OutlinedTextField(
-                        effectiveFrom,
-                        { effectiveFrom = it.filter { ch -> ch.isDigit() || ch == '-' }.take(10) },
-                        Modifier.fillMaxWidth(),
-                        label = { Text("سارية من YYYY-MM-DD - اختياري") },
-                        isError = !effectiveFromValid,
-                        supportingText = if (!effectiveFromValid) ({ Text("اكتب التاريخ كاملًا مثل 2026-10-03 أو اتركه فارغًا") }) else null,
-                        singleLine = true
-                    )
+                    OutlinedTextField(destination, { destination = it.uppercase() }, Modifier.fillMaxWidth(),
+                        label = { Text("الوجهة أو المسار — اختياري") },
+                        supportingText = { Text("كود المطار مثل AMM أو المسار BGW-AMM-BGW؛ فارغ = الكل") })
                 }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(currency == null, { currency = null }, label = { Text("كل العملات") })
+                        Currency.entries.forEach { cur -> FilterChip(currency == cur, { currency = cur }, label = { Text(cur.name) }) }
+                    }
+                    Text("للرسم الثابت اختر عملة المبلغ؛ لن يُحوّل التطبيق العملات.", fontSize = 12.sp)
+                }
+                item { Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("مفعّل", Modifier.weight(1f)); Switch(active, { active = it })
+                } }
+                if (!effectiveFromValid) item { Text("الفترة غير صحيحة: النهاية يجب أن تكون بعد البداية أو مساوية لها", color = Bad) }
+                if (conflict) item { Text("توجد قاعدة متداخلة بنفس الشروط؛ عدّل الفترة أو عطّل القاعدة السابقة", color = Bad) }
+                if (!amountValid || !roundTripValid) item { Text("أدخل قيمة صحيحة غير سالبة؛ النسبة حتى 100%", color = Bad) }
                 item {
                     OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), label = { Text("ملاحظة القاعدة") }, minLines = 2)
                 }
@@ -2551,7 +2578,7 @@ private fun CommissionRuleDialog(
         },
         confirmButton = {
             Button(
-                enabled = airline.isNotBlank() && effectiveFromValid,
+                enabled = airline.isNotBlank() && effectiveFromValid && !conflict && amountValid && roundTripValid && (kind != RuleKind.FIXED_PER_PASSENGER || currency != null),
                 onClick = {
                     vm.saveRule(
                         airline = airline,
@@ -2561,7 +2588,8 @@ private fun CommissionRuleDialog(
                         note = note.ifBlank { null },
                         effectiveFrom = effectiveFrom.ifBlank { null },
                         direction = direction,
-                        ruleId = initial.id.takeUnless { it == "new" }
+                        ruleId = initial.id.takeUnless { it == "new" },
+                        effectiveTo = effectiveTo.ifBlank { null }, destination = destination.trim().uppercase().ifBlank { null }, currency = currency, active = active
                     )
                     onDismiss()
                 }
@@ -2908,6 +2936,7 @@ private fun VisaSettings(vm: MainViewModel, onBack: () -> Unit) {
                         color = if (rule.price == null) Warn else MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold
                     )
+                    Text(RulePeriods.label(rule.effectiveFrom, rule.effectiveTo), fontSize = 13.sp)
                     rule.note?.takeIf { it.isNotBlank() }?.let {
                         Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -2924,7 +2953,7 @@ private fun VisaSettings(vm: MainViewModel, onBack: () -> Unit) {
                             onClick = {
                                 editing = rule.copy(
                                     id = "",
-                                    visaType = rule.visaType?.let { it + " نسخة" } ?: "نسخة"
+                                    effectiveFrom = null, effectiveTo = null
                                 )
                             }
                         ) {
@@ -2970,6 +2999,7 @@ private fun VisaSettings(vm: MainViewModel, onBack: () -> Unit) {
 
     editing?.let { rule ->
         VisaPriceRuleDialog(
+            vm = vm,
             rule = rule,
             onDismiss = { editing = null },
             onSave = {
@@ -2982,6 +3012,7 @@ private fun VisaSettings(vm: MainViewModel, onBack: () -> Unit) {
 
 @Composable
 private fun VisaPriceRuleDialog(
+    vm: MainViewModel,
     rule: VisaPriceRule,
     onDismiss: () -> Unit,
     onSave: (VisaPriceRule) -> Unit
@@ -2992,6 +3023,13 @@ private fun VisaPriceRuleDialog(
     var currency by remember(rule.id, rule.currency) { mutableStateOf(rule.currency) }
     var active by remember(rule.id, rule.active) { mutableStateOf(rule.active) }
     var note by remember(rule.id, rule.note) { mutableStateOf(rule.note.orEmpty()) }
+    var effectiveFrom by remember(rule.id) { mutableStateOf(rule.effectiveFrom.orEmpty()) }
+    var effectiveTo by remember(rule.id) { mutableStateOf(rule.effectiveTo.orEmpty()) }
+    val periodValid = RulePeriods.validRange(effectiveFrom, effectiveTo)
+    val priceValid = price.isBlank() || (price.toDoubleOrNull()?.let { it.isFinite() && it >= 0 } == true)
+    val candidate = rule.copy(country = country, visaType = visaType.ifBlank { null }, currency = currency, active = active,
+        price = price.toDoubleOrNull(), effectiveFrom = effectiveFrom.ifBlank { null }, effectiveTo = effectiveTo.ifBlank { null })
+    val conflict = vm.visaPriceRules().any { RulePeriods.conflicts(it, candidate) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -3032,6 +3070,11 @@ private fun VisaPriceRuleDialog(
                         singleLine = true
                     )
                 }
+                item { PeriodDateField("من تاريخ العملية", effectiveFrom) { effectiveFrom = it } }
+                item { PeriodDateField("إلى تاريخ العملية (اختياري)", effectiveTo) { effectiveTo = it } }
+                if (!periodValid) item { Text("فترة غير صحيحة", color = Bad) }
+                if (conflict) item { Text("يوجد سعر متداخل لنفس الدولة والنوع والعملة", color = Bad) }
+                if (!priceValid) item { Text("أدخل سعرًا صحيحًا غير سالب", color = Bad) }
                 item {
                     OutlinedTextField(
                         price,
@@ -3072,10 +3115,11 @@ private fun VisaPriceRuleDialog(
         },
         confirmButton = {
             Button(
-                enabled = country.isNotBlank() && (price.isBlank() || price.toDoubleOrNull() != null),
+                enabled = country.isNotBlank() && priceValid && periodValid && !conflict,
                 onClick = {
                     onSave(
                         rule.copy(
+                            effectiveFrom = effectiveFrom.ifBlank { null }, effectiveTo = effectiveTo.ifBlank { null },
                             country = country,
                             visaType = visaType.ifBlank { null },
                             price = price.toDoubleOrNull(),
@@ -3146,7 +3190,7 @@ private fun PaymentsSettings(vm: MainViewModel, onBack: () -> Unit) {
 @Composable
 private fun AppearanceSettings(vm: MainViewModel, onBack: () -> Unit) {
     val revision by vm.settingsRevision.collectAsState()
-    var preset by remember(revision) { mutableStateOf(vm.setting("theme_preset", "NAVY")) }
+    var preset by remember(revision) { mutableStateOf(vm.setting("theme_preset", "MONEY")) }
     val themeKey = preset.uppercase()
     var fontChoice by remember(revision, themeKey) { mutableStateOf(vm.setting("theme_" + themeKey + "_font", "SANS")) }
     var fontScale by remember(revision, themeKey) { mutableStateOf(vm.setting("theme_" + themeKey + "_font_scale", "1.0").toFloatOrNull() ?: 1f) }
@@ -3179,6 +3223,7 @@ private fun AppearanceSettings(vm: MainViewModel, onBack: () -> Unit) {
             Text("5 ثيمات قابلة للتعديل", fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf(
+                    "MONEY" to "إسلام الفاتح",
                     "NAVY" to "Eslam Navy",
                     "MIDNIGHT" to "Midnight",
                     "EMERALD" to "Emerald",
@@ -3848,7 +3893,7 @@ private fun TransactionDetailDialog(
                                             if (!rule.effectiveFrom.isNullOrBlank()) {
                                                 val dateOk = Regex("""\d{4}-\d{2}-\d{2}""").matches(rule.effectiveFrom.orEmpty())
                                                 Text(
-                                                    if (dateOk) "سارية من " + rule.effectiveFrom
+                                                    if (dateOk) RulePeriods.label(rule.effectiveFrom, rule.effectiveTo)
                                                     else "تاريخ السريان غير مكتمل — صححه من قاعدة العمولة",
                                                     fontSize = 12.sp,
                                                     color = if (dateOk) MaterialTheme.colorScheme.onSurfaceVariant else Warn
@@ -5046,3 +5091,21 @@ private fun compactNumber(value: Double): String =
 private fun formatMoney(value: Double, currency: Currency): String =
     if (currency == Currency.USD) "$" + String.format("%,.2f", value)
     else String.format("%,.0f د.ع", value)
+
+
+@Composable
+private fun PeriodDateField(label: String, value: String, onChange: (String) -> Unit) {
+    val context = LocalContext.current
+    val current = RulePeriods.date(value) ?: java.time.LocalDate.now()
+    Column {
+        Text(label, style = MaterialTheme.typography.labelLarge)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(modifier = Modifier.weight(1f), onClick = {
+                android.app.DatePickerDialog(context, { _, year, month, day ->
+                    onChange(java.time.LocalDate.of(year, month + 1, day).toString())
+                }, current.year, current.monthValue - 1, current.dayOfMonth).show()
+            }) { Icon(Icons.Rounded.DateRange, null); Spacer(Modifier.width(8.dp)); Text(value.ifBlank { "غير محدد" }) }
+            if (value.isNotBlank()) IconButton(onClick = { onChange("") }) { Icon(Icons.Rounded.Clear, "مسح التاريخ") }
+        }
+    }
+}

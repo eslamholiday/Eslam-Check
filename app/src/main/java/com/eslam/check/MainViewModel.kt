@@ -188,8 +188,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun airlineNames(): List<String> = db.airlineNames()
     fun ruleForTransaction(tx: Transaction): CommissionRule? = db.ruleForTransaction(tx)
     fun visaPriceRules(): List<VisaPriceRule> = db.visaPriceRules()
-    fun visaPriceFor(country: String?, visaType: String?, currency: Currency): VisaPriceRule? =
-        db.visaPriceFor(country, visaType, currency)
+    fun visaPriceFor(country: String?, visaType: String?, currency: Currency, date: String?): VisaPriceRule? =
+        db.visaPriceFor(country, visaType, currency, date)
+    fun visaPriceForTransaction(tx: Transaction, type: String?): VisaPriceRule? = db.visaPriceForTransaction(tx, type)
     fun dataHealthStats(): DataHealthStats = db.dataHealthStats()
     fun dataConflicts(): List<DataConflict> = db.dataConflicts()
     fun latestLocalBackupName(): String? = db.latestLocalBackupName()
@@ -243,7 +244,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         note: String? = null,
         effectiveFrom: String? = null,
         direction: String = "ANY",
-        ruleId: String? = null
+        ruleId: String? = null,
+        effectiveTo: String? = null,
+        destination: String? = null,
+        currency: Currency? = null,
+        active: Boolean = true
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             val existing = ruleId?.let { id -> db.rules().firstOrNull { it.id == id } }
@@ -253,14 +258,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 kind = kind,
                 value = value,
                 roundTripValue = roundTripValue,
-                reverseOnly = existing?.reverseOnly ?: false,
+                reverseOnly = direction == "REVERSE",
                 direction = direction,
                 effectiveFrom = effectiveFrom,
+                effectiveTo = effectiveTo, destination = destination, currency = currency,
                 learned = existing?.learned ?: false,
-                active = true,
+                active = active,
                 note = note
             )
-            db.saveRule(rule)
+            try { db.saveRule(rule) } catch (e: IllegalArgumentException) { _message.value = e.message; return@launch }
             _rules.value = db.rules()
             _message.value = if (existing == null) "تمت إضافة قاعدة عمولة جديدة" else "تم تحديث قاعدة العمولة"
         }
@@ -460,7 +466,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun saveVisaPriceRule(rule: VisaPriceRule) {
         viewModelScope.launch(Dispatchers.IO) {
-            db.saveVisaPriceRule(rule)
+            try { db.saveVisaPriceRule(rule) } catch (e: IllegalArgumentException) { _message.value = e.message; return@launch }
             _message.value = "تم حفظ سعر الفيزا الافتراضي"
             _settingsRevision.value = _settingsRevision.value + 1
         }
@@ -475,3 +481,4 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _settingsRevision.value = _settingsRevision.value + 1
     }
 }
+
