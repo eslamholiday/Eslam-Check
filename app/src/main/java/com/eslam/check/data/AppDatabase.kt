@@ -9,11 +9,11 @@ import java.security.MessageDigest
 import java.util.UUID
 import com.eslam.check.util.RulePeriods
 
-class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 10) {
+class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 11) {
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         val currentVersion = db.version
-        if (currentVersion in 1 until 10) {
+        if (currentVersion in 1 until 11) {
             try {
                 db.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
                     if (cursor.moveToFirst()) { /* force checkpoint result */ }
@@ -21,7 +21,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             } catch (_: Exception) { }
             try {
                 val backupDir = java.io.File(context.filesDir, "backups").apply { mkdirs() }
-                val backup = java.io.File(backupDir, "preupgrade-v" + currentVersion + "-to-v10.db")
+                val backup = java.io.File(backupDir, "preupgrade-v" + currentVersion + "-to-v11.db")
                 val source = context.getDatabasePath("eslam_check.db")
                 if (source.exists() && !backup.exists()) source.copyTo(backup, overwrite = false)
             } catch (_: Exception) { }
@@ -56,6 +56,8 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
                 visa_country TEXT,
                 external_link TEXT,
                 commission_rule_snapshot TEXT,
+                manual_commission_kind TEXT,
+                manual_commission_value REAL,
                 review_state TEXT NOT NULL,
                 warning TEXT,
                 note TEXT,
@@ -84,7 +86,8 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
                 responsible_relation TEXT,
                 is_responsible INTEGER NOT NULL DEFAULT 0,
                 merged_into_id TEXT,
-                rating INTEGER NOT NULL DEFAULT 0
+                rating INTEGER NOT NULL DEFAULT 0,
+                hidden INTEGER NOT NULL DEFAULT 0
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX idx_passenger_name ON passengers(normalized_name)")
@@ -558,6 +561,12 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             db.execSQL("ALTER TABLE visa_price_rules ADD COLUMN effective_to TEXT")
             putSetting(db, "theme_preset", "MONEY")
         }
+        if (oldVersion < 11) {
+            db.execSQL("ALTER TABLE transactions ADD COLUMN manual_commission_kind TEXT")
+            db.execSQL("ALTER TABLE transactions ADD COLUMN manual_commission_value REAL")
+            db.execSQL("ALTER TABLE passengers ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+        }
+
     }
 
     private fun seedDefaults(db: SQLiteDatabase) {
@@ -789,7 +798,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             if (!integrityOk) return false
 
             val version = probe.version
-            if (version !in 1..10) return false
+            if (version !in 1..11) return false
 
             val requiredTables = setOf(
                 "transactions",
@@ -902,7 +911,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
 
         readableDatabase.rawQuery(
             """
-                SELECT passport, GROUP_CONCAT(name, ' • '), COUNT(*)
+                SELECT passport, GROUP_CONCAT(name, ' • '), GROUP_CONCAT(id)
                 FROM passengers
                 WHERE merged_into_id IS NULL AND passport IS NOT NULL AND TRIM(passport)<>''
                 GROUP BY UPPER(REPLACE(passport,' ',''))
@@ -912,13 +921,13 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             null
         ).use { cursor ->
             while (cursor.moveToNext()) {
-                out += DataConflict("PASSPORT", "جواز مكرر: " + cursor.getString(0), cursor.getString(1))
+                out += DataConflict("PASSPORT", "جواز مكرر: " + cursor.getString(0), cursor.getString(1), passengerIds = cursor.getString(2).split(","))
             }
         }
 
         readableDatabase.rawQuery(
             """
-                SELECT phone, GROUP_CONCAT(name, ' • '), COUNT(*)
+                SELECT phone, GROUP_CONCAT(name, ' • '), GROUP_CONCAT(id)
                 FROM passengers
                 WHERE merged_into_id IS NULL AND phone IS NOT NULL AND TRIM(phone)<>''
                 GROUP BY phone
@@ -928,7 +937,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             null
         ).use { cursor ->
             while (cursor.moveToNext()) {
-                out += DataConflict("PHONE", "هاتف مكرر: " + cursor.getString(0), cursor.getString(1))
+                out += DataConflict("PHONE", "هاتف مكرر: " + cursor.getString(0), cursor.getString(1), passengerIds = cursor.getString(2).split(","))
             }
         }
 
@@ -947,7 +956,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
                 out += DataConflict(
                     "ALIAS",
                     "ارتباط هوية مكرر: " + cursor.getString(0) + " / " + cursor.getString(1),
-                    "مرتبط بأكثر من ملف شخص"
+                    "مرتبط بأكثر من ملف شخص", passengerIds = cursor.getString(2).split(",")
                 )
             }
         }
@@ -974,7 +983,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
                 out += DataConflict(
                     "RESPONSIBLE",
                     "تعارض مسؤولين في عملية " + cursor.getString(1),
-                    "يوجد أكثر من مسؤول داخل نفس مجموعة المسافرين"
+                    "يوجد أكثر من مسؤول داخل نفس مجموعة المسافرين", transactionId = cursor.getString(0)
                 )
             }
         }
@@ -993,7 +1002,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
                 out += DataConflict(
                     "NO_PASSENGERS",
                     "عملية بلا مسافرين: " + cursor.getString(1),
-                    cursor.getString(2)
+                    cursor.getString(2), transactionId = cursor.getString(0)
                 )
             }
         }
@@ -1148,12 +1157,18 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
     }
 
     private fun txValues(tx: Transaction) = ContentValues().apply {
+        require(tx.manualCommissionKind == null || tx.manualCommissionKind in setOf(RuleKind.PERCENT_BASE, RuleKind.FIXED_PER_PASSENGER, RuleKind.NONE))
+        if (tx.manualCommissionKind != null) {
+            val value = tx.manualCommissionValue ?: 0.0
+            require(value.isFinite() && value >= 0 && (tx.manualCommissionKind != RuleKind.PERCENT_BASE || value <= 100)) { "عمولة يدوية غير صالحة" }
+        }
         put("id", tx.id); put("external_id", tx.externalId); put("ledger_id", tx.ledgerId); put("document_id", tx.documentId); put("snapshot_id", tx.snapshotId)
         put("operation_no", tx.operationNo); put("transaction_date", tx.transactionDate); put("currency", tx.currency.name)
         put("type", tx.type.name); put("source", tx.source.name); put("source_code", tx.sourceCode); put("statement_seq", tx.statementSeq); put("batch_id", tx.batchId)
         put("pnr", tx.pnr); put("route", tx.route)
         put("amount", tx.amount); put("ledger_effect", tx.ledgerEffect); put("discount", tx.discount); put("balance_after", tx.balanceAfter)
         put("base_fare", tx.baseFare); put("reference_total", tx.referenceTotal); put("airline", tx.airline); put("visa_country", tx.visaCountry)
+        put("manual_commission_kind", tx.manualCommissionKind?.name); put("manual_commission_value", tx.manualCommissionValue)
         put("external_link", tx.externalLink); put("commission_rule_snapshot", tx.commissionRuleSnapshot)
         put("review_state", tx.reviewState.name); put("warning", tx.warning); put("note", tx.note); put("flags", tx.flags); put("raw_text", tx.rawText)
         put("source_hash", tx.sourceHash); put("imported_at", tx.importedAt); put("reviewed_at", tx.reviewedAt)
@@ -1240,7 +1255,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
         readableDatabase.rawQuery("""
             SELECT DISTINCT p.* FROM passengers p
             LEFT JOIN passenger_aliases a ON a.passenger_id=p.id
-            WHERE p.merged_into_id IS NULL
+            WHERE p.merged_into_id IS NULL AND p.hidden=0
               AND (
                 p.normalized_name LIKE ? OR p.passport LIKE ? OR p.phone LIKE ?
                 OR (a.kind='NAME' AND a.normalized_value LIKE ?)
@@ -1290,7 +1305,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
     fun allPassengers(limit: Int = 500): List<Passenger> {
         val out = mutableListOf<Passenger>()
         readableDatabase.rawQuery(
-            "SELECT * FROM passengers WHERE merged_into_id IS NULL ORDER BY name LIMIT ?",
+            "SELECT * FROM passengers WHERE merged_into_id IS NULL AND hidden=0 ORDER BY name LIMIT ?",
             arrayOf(limit.toString())
         ).use { c ->
             while (c.moveToNext()) out += c.toPassenger()
@@ -1802,6 +1817,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
         statementSeq = inn("statement_seq"), batchId = sn("batch_id"), pnr = sn("pnr"), route = sn("route"),
         amount = d("amount"), ledgerEffect = dn("ledger_effect"), discount = d("discount"), balanceAfter = dn("balance_after"),
         baseFare = dn("base_fare"), referenceTotal = dn("reference_total"), airline = sn("airline"), visaCountry = sn("visa_country"),
+        manualCommissionKind = sn("manual_commission_kind")?.let { RuleKind.valueOf(it) }, manualCommissionValue = dn("manual_commission_value"),
         externalLink = sn("external_link"), commissionRuleSnapshot = sn("commission_rule_snapshot"),
         reviewState = ReviewState.valueOf(s("review_state")), warning = sn("warning"), note = sn("note"), flags = sn("flags"), rawText = sn("raw_text"),
         sourceHash = sn("source_hash"), importedAt = l("imported_at"), reviewedAt = ln("reviewed_at"), changedAfterReview = i("changed_after_review") == 1
@@ -1815,7 +1831,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
     )
 
     private fun normalizeAliasValue(kind: String, value: String): String = when (kind.uppercase()) {
-        "PHONE" -> normalizeIraqPhoneOrNull(value) ?: value.filter(Char::isDigit)
+        "PHONE" -> normalizePhoneOrNull(value) ?: value.filter(Char::isDigit)
         "PASSPORT" -> value.uppercase().replace(Regex("[^A-Z0-9]"), "")
         else -> normalize(value)
     }
@@ -2122,12 +2138,31 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
     }
 
     fun updatePassenger(person: Passenger) {
+        writableDatabase.beginTransaction()
+        try {
+            updatePassengerProfile(person)
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction() }
+    }
+
+    private fun updatePassengerProfile(person: Passenger) {
         val canonicalId = resolveCanonicalPassengerId(person.id)
         val old = passengerRawById(canonicalId) ?: return
         addAlias(writableDatabase, canonicalId, "NAME", old.name, canonicalId)
         addAlias(writableDatabase, canonicalId, "PASSPORT", old.passport, canonicalId)
-        addAlias(writableDatabase, canonicalId, "PHONE", old.phone, canonicalId)
 
+
+        val groupIds = mergedGroupIds(canonicalId)
+        val placeholders = groupIds.joinToString(",") { "?" }
+        writableDatabase.delete("passenger_aliases", "kind='PHONE' AND passenger_id IN ($placeholders)", groupIds.toTypedArray())
+        writableDatabase.update("passengers", ContentValues().apply {
+            put("phone", normalizeIraqPhoneForStorage(person.phone))
+            put("is_responsible", if (person.isResponsible) 1 else 0)
+        }, "id IN ($placeholders)", groupIds.toTypedArray())
+        if (!person.isResponsible) {
+            writableDatabase.update("passengers", ContentValues().apply { putNull("responsible_id"); putNull("responsible_relation") },
+                "responsible_id IN ($placeholders)", groupIds.toTypedArray())
+        }
         val responsibleId = person.responsibleId?.let(::resolveCanonicalPassengerId)
         writableDatabase.update("passengers", ContentValues().apply {
             put("name", person.name.trim())
@@ -2144,6 +2179,25 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
         addAlias(writableDatabase, canonicalId, "PASSPORT", person.passport, canonicalId)
         addAlias(writableDatabase, canonicalId, "PHONE", normalizeIraqPhoneForStorage(person.phone), canonicalId)
         audit("passenger", canonicalId, "edit", person.name)
+    }
+
+    fun clearPassengerPhone(id: String) {
+        val ids = mergedGroupIds(id)
+        val placeholders = ids.joinToString(",") { "?" }
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.update("passengers", ContentValues().apply { putNull("phone") }, "id IN ($placeholders)", ids.toTypedArray())
+            writableDatabase.delete("passenger_aliases", "kind='PHONE' AND passenger_id IN ($placeholders)", ids.toTypedArray())
+            audit("passenger", id, "clear_phone", null)
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction() }
+    }
+
+    fun hidePassenger(id: String) {
+        val ids = mergedGroupIds(id)
+        val placeholders = ids.joinToString(",") { "?" }
+        writableDatabase.update("passengers", ContentValues().apply { put("hidden", 1) }, "id IN ($placeholders)", ids.toTypedArray())
+        audit("passenger", id, "hide", "hidden from passenger list; operations retained")
     }
 
     fun setPassengerRating(passengerId: String, rating: Int) {
@@ -2314,6 +2368,10 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
     }
 
     fun ruleForTransaction(tx: Transaction): CommissionRule? {
+        if (tx.type == TxType.TICKET && tx.manualCommissionKind != null) {
+            return CommissionRule(id = "manual:" + tx.id, airline = tx.airline.orEmpty(),
+                kind = tx.manualCommissionKind, value = tx.manualCommissionValue ?: 0.0, currency = tx.currency)
+        }
         if (tx.reviewState == ReviewState.REVIEWED && !tx.commissionRuleSnapshot.isNullOrBlank()) {
             val fields = tx.commissionRuleSnapshot.split("~")
             if (fields.size >= 7) {

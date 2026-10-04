@@ -1216,6 +1216,7 @@ private fun PassengerDetailDialog(
     var networkOpen by remember { mutableStateOf(false) }
     var dependentSearch by remember { mutableStateOf("") }
     var unmergeTarget by remember { mutableStateOf<Passenger?>(null) }
+    var confirmHide by remember { mutableStateOf(false) }
     var deleteAliasTarget by remember { mutableStateOf<PassengerAlias?>(null) }
     var pendingProfileResponsible by remember { mutableStateOf<Passenger?>(null) }
     var profileResponsibilityConflicts by remember { mutableStateOf<List<Passenger>>(emptyList()) }
@@ -1332,7 +1333,16 @@ private fun PassengerDetailDialog(
                     }
 
                     item {
-                        val normalizedPhone = normalizeIraqPhoneOrNull(edit.phone)
+                        TextButton(onClick = { confirmHide = true }) { Text("حذف المسافر من القائمة", color = MaterialTheme.colorScheme.error) }
+                        TextButton(onClick = {
+                            edit = edit.copy(phone = null)
+                            vm.clearPassengerPhone(edit.id)
+                            aliases = aliases.filterNot { it.kind == "PHONE" }
+                        }) { Text("مسح رقم الهاتف نهائيًا", color = MaterialTheme.colorScheme.error) }
+                    }
+
+                    item {
+                        val normalizedPhone = normalizePhoneOrNull(edit.phone)
                         val phoneInvalid = !edit.phone.isNullOrBlank() && normalizedPhone == null
                         OutlinedTextField(
                             edit.phone.orEmpty(),
@@ -1342,7 +1352,7 @@ private fun PassengerDetailDialog(
                             isError = phoneInvalid,
                             supportingText = {
                                 when {
-                                    phoneInvalid -> Text("رقم عراقي غير صالح. الصيغة المعتمدة: 07xxxxxxxxx")
+                                    phoneInvalid -> Text("أدخل رقمًا عراقيًا أو رقمًا دوليًا يبدأ بـ + أو 00")
                                     normalizedPhone != null -> Text("سيُحفظ: " + normalizedPhone)
                                 }
                             },
@@ -1646,6 +1656,13 @@ private fun PassengerDetailDialog(
             }
         }
     }
+
+    if (confirmHide) AlertDialog(
+        onDismissRequest = { confirmHide = false }, title = { Text("حذف من قائمة المسافرين؟") },
+        text = { Text("سيبقى مخفيًا عند استيراد الكشف مجددًا، وتبقى عملياته وروابطه محفوظة.") },
+        confirmButton = { TextButton(onClick = { vm.hidePassenger(passenger.id); onDismiss() }) { Text("حذف من القائمة") } },
+        dismissButton = { TextButton(onClick = { confirmHide = false }) { Text("إلغاء") } }
+    )
 
     if (responsiblePicker) {
         AlertDialog(
@@ -1955,7 +1972,24 @@ private fun DataSettingsPage(vm: MainViewModel, onBack: () -> Unit) {
     val stats = remember(revision, vm.transactions.collectAsState().value, vm.passengers.collectAsState().value) {
         vm.dataHealthStats()
     }
-    var conflicts by remember(revision) { mutableStateOf(vm.dataConflicts()) }
+    val people by vm.passengers.collectAsState()
+    var conflictPassenger by remember { mutableStateOf<Passenger?>(null) }
+    var conflictTransaction by remember { mutableStateOf<String?>(null) }
+    var selectedConflict by remember { mutableStateOf<DataConflict?>(null) }
+    var conflicts by remember(revision, people) { mutableStateOf(vm.dataConflicts()) }
+    selectedConflict?.let { conflict ->
+        AlertDialog(onDismissRequest = { selectedConflict = null }, title = { Text(conflict.title) },
+            text = { Column { conflict.passengerIds.distinct().forEach { id ->
+                vm.passengerById(id)?.let { p -> TextButton(onClick = { conflictPassenger = p; selectedConflict = null }) { Text(p.name + "  ←") } }
+            } } }, confirmButton = { TextButton(onClick = { selectedConflict = null }) { Text("إغلاق") } })
+    }
+    conflictPassenger?.let { p ->
+        PassengerDetailDialog(vm, p, people, onDismiss = { conflictPassenger = null; conflicts = vm.dataConflicts() },
+            onOpenTransaction = { conflictPassenger = null; conflictTransaction = it }, onOpenPassenger = { conflictPassenger = it })
+    }
+    conflictTransaction?.let { id ->
+        TransactionDetailDialog(vm = vm, id = id, onDismiss = { conflictTransaction = null; conflicts = vm.dataConflicts() }, onNext = { conflictTransaction = it })
+    }
     var confirmImportUri by remember { mutableStateOf<Uri?>(null) }
 
     val exportLauncher = rememberLauncherForActivityResult(
@@ -2054,7 +2088,9 @@ private fun DataSettingsPage(vm: MainViewModel, onBack: () -> Unit) {
                         fontWeight = FontWeight.Bold
                     )
                     conflicts.take(20).forEach { conflict ->
-                        Surface(shape = RoundedCornerShape(10.dp), tonalElevation = 1.dp) {
+                        Surface(modifier = Modifier.clickable {
+                            if (conflict.transactionId != null) conflictTransaction = conflict.transactionId else selectedConflict = conflict
+                        }, shape = RoundedCornerShape(10.dp), tonalElevation = 1.dp) {
                             Column(Modifier.fillMaxWidth().padding(9.dp)) {
                                 Text(conflict.title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                 Text(conflict.details, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2815,14 +2851,14 @@ private fun WhatsAppSettings(vm: MainViewModel, onBack: () -> Unit) {
                             onValueChange = { issuerPhone = it },
                             modifier = Modifier.fillMaxWidth(),
                             label = { Text("رقم واتساب") },
-                            isError = issuerPhone.isNotBlank() && normalizeIraqPhoneOrNull(issuerPhone) == null,
+                            isError = issuerPhone.isNotBlank() && normalizePhoneOrNull(issuerPhone) == null,
                             supportingText = {
-                                val normalized = normalizeIraqPhoneOrNull(issuerPhone)
+                                val normalized = normalizePhoneOrNull(issuerPhone)
                                 Text(
                                     when {
-                                        issuerPhone.isBlank() -> "الصيغة المعتمدة عند الحفظ: 07xxxxxxxxx"
+                                        issuerPhone.isBlank() -> "رقم عراقي أو دولي يبدأ بـ + أو 00"
                                         normalized != null -> "سيُحفظ: " + normalized
-                                        else -> "رقم عراقي غير صالح"
+                                        else -> "رقم هاتف غير صالح"
                                     }
                                 )
                             },
@@ -3541,6 +3577,7 @@ private fun TransactionDetailDialog(
     var edit by remember(id, tx.airline, tx.referenceTotal, tx.type, tx.note, tx.externalLink, tx.reviewState) { mutableStateOf(tx) }
     var airlinePicker by remember { mutableStateOf(false) }
     var commissionEditor by remember { mutableStateOf(false) }
+    var manualCommissionEditor by remember { mutableStateOf(false) }
     var responsiblePicker by remember { mutableStateOf(false) }
     var responsiblePickerTab by remember { mutableStateOf("OPERATION") }
     var responsibleSearch by remember { mutableStateOf("") }
@@ -3759,6 +3796,12 @@ private fun TransactionDetailDialog(
                             }
                         }
 
+                        item {
+                            OutlinedButton(onClick = { manualCommissionEditor = true }, modifier = Modifier.fillMaxWidth()) {
+                                Text(if (edit.manualCommissionKind != null) "عمولة يدوية • " + (rule?.let(::ruleLabel) ?: "") else "عمولة يدوية لهذه العملية")
+                            }
+                        }
+
                         if (rule?.kind == RuleKind.FIXED_PER_PASSENGER) {
                             item {
                                 NullableNumberField(
@@ -3822,7 +3865,10 @@ private fun TransactionDetailDialog(
                                     commissionForPassenger = rowCommission,
                                     inferredCommission = commission.inferredFromDiscount,
                                     baseText = baseFareDrafts[d.passenger.id] ?: d.baseFare?.let(::compactNumber).orEmpty(),
-                                    onBaseFareTextChange = { text -> baseFareDrafts = baseFareDrafts + (d.passenger.id to text) },
+                                    onBaseFareTextChange = { text ->
+                                        baseFareDrafts = PassengerFareEdits.copyWithinClass(baseFareDrafts,
+                                            details.associate { it.passenger.id to it.passengerType }, d.passenger.id, text)
+                                    },
                                     onOpenPassenger = { selectedPassenger = it },
                                     onDeleteLink = { deletePassengerTarget = it }
                                 )
@@ -4448,6 +4494,34 @@ private fun TransactionDetailDialog(
                 vm.setAirline(edit.id, chosen?.name)
                 airlinePicker = false
             }
+        )
+    }
+
+    if (manualCommissionEditor) {
+        var kind by remember { mutableStateOf(edit.manualCommissionKind) }
+        var valueText by remember { mutableStateOf(edit.manualCommissionValue?.let(::compactNumber).orEmpty()) }
+        val amount = runCatching { PassengerFareEdits.parse(valueText) }.getOrNull()
+        val valid = kind == null || kind == RuleKind.NONE || (amount != null && (kind != RuleKind.PERCENT_BASE || amount <= 100))
+        AlertDialog(
+            onDismissRequest = { manualCommissionEditor = false },
+            title = { Text("عمولة هذه العملية فقط") },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("تُحفظ مع العملية ولا تغيّر قواعد الخط أو فتراتها.")
+                listOf(null to "العمولة الافتراضية حسب القاعدة", RuleKind.PERCENT_BASE to "نسبة من السعر الأساسي", RuleKind.FIXED_PER_PASSENGER to "رسم إصدار ثابت لكل مسافر", RuleKind.NONE to "بدون عمولة").forEach { (option, label) ->
+                    Row(Modifier.fillMaxWidth().clickable { kind = option }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = kind == option, onClick = { kind = option })
+                        Text(label)
+                    }
+                }
+                if (kind != null && kind != RuleKind.NONE) OutlinedTextField(valueText, { valueText = it },
+                    label = { Text(if (kind == RuleKind.PERCENT_BASE) "النسبة %" else "الرسم لكل مسافر • " + edit.currency.name) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), isError = !valid)
+            } },
+            confirmButton = { TextButton(enabled = valid, onClick = {
+                edit = edit.copy(manualCommissionKind = kind, manualCommissionValue = if (kind == null) null else if (kind == RuleKind.NONE) 0.0 else amount, commissionRuleSnapshot = null)
+                manualCommissionEditor = false
+            }) { Text("تطبيق") } },
+            dismissButton = { TextButton(onClick = { manualCommissionEditor = false }) { Text("إلغاء") } }
         )
     }
 

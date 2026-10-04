@@ -30,14 +30,25 @@ fun normalizeIraqPhoneOrNull(value: String?): String? {
     return digits
 }
 
-fun normalizeIraqPhoneForStorage(value: String?): String? {
-    val raw = value?.trim().orEmpty()
-    if (raw.isBlank()) return null
-    return normalizeIraqPhoneOrNull(raw) ?: raw
+fun normalizePhoneOrNull(value: String?): String? {
+    val raw = value.orEmpty().trim().map { c ->
+        if (c.isDigit()) Character.digit(c, 10).digitToChar() else c
+    }.joinToString("").replace(Regex("[\\s()–-]"), "")
+    if (!raw.matches(Regex("[+]?[0-9]+"))) return null
+    normalizeIraqPhoneOrNull(raw)?.let { return it }
+    val international = when {
+        raw.startsWith("+") -> raw.drop(1)
+        raw.startsWith("00") -> raw.drop(2)
+        else -> return null
+    }
+    return if (international.length in 8..15 && international.first() != '0') "+$international" else null
 }
 
+fun normalizeIraqPhoneForStorage(value: String?): String? =
+    value?.trim()?.takeIf { it.isNotBlank() }?.let { normalizePhoneOrNull(it) ?: it }
+
 fun iraqPhoneForWhatsApp(value: String?): String? =
-    normalizeIraqPhoneOrNull(value)?.let { "964" + it.drop(1) }
+    normalizePhoneOrNull(value)?.let { if (it.startsWith("+")) it.drop(1) else "964" + it.drop(1) }
 
 data class Transaction(
     val id: String,
@@ -65,6 +76,8 @@ data class Transaction(
     val visaCountry: String? = null,
     val externalLink: String? = null,
     val commissionRuleSnapshot: String? = null,
+    val manualCommissionKind: RuleKind? = null,
+    val manualCommissionValue: Double? = null,
     val reviewState: ReviewState = ReviewState.UNREVIEWED,
     val warning: String? = null,
     val note: String? = null,
@@ -151,7 +164,9 @@ data class DataHealthStats(
 data class DataConflict(
     val kind: String,
     val title: String,
-    val details: String
+    val details: String,
+    val passengerIds: List<String> = emptyList(),
+    val transactionId: String? = null
 )
 
 data class PassengerNetworkNode(

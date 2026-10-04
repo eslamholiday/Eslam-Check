@@ -4,6 +4,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PassengerFareEditsTest {
+    @Test fun copiesTwoAdultsTwoChildrenAndTwoInfantsSeparately() {
+        val classes = mapOf("a1" to "ADT", "a2" to "ADT", "c1" to "CHD", "c2" to "CHD", "i1" to "INF", "i2" to "INF")
+        var drafts = PassengerFareEdits.copyWithinClass(emptyMap(), classes, "a1", "444840")
+        drafts = PassengerFareEdits.copyWithinClass(drafts, classes, "c1", "300000")
+        drafts = PassengerFareEdits.copyWithinClass(drafts, classes, "i1", "45000")
+        val saved = PassengerFareEdits.values(drafts)
+        assertEquals(444840.0, saved["a2"])
+        assertEquals(300000.0, saved["c2"])
+        assertEquals(45000.0, saved["i2"])
+        assertEquals(6, saved.size)
+    }
+    @Test fun unknownCategoryNeverCopiesToAnotherPassenger() {
+        val result = PassengerFareEdits.copyWithinClass(emptyMap(), mapOf("x" to null, "y" to null), "x", "100")
+        assertEquals(setOf("x"), result.keys)
+    }
     @Test fun adultChildAndInfantRemainIndependent() {
         val saved = PassengerFareEdits.values(mapOf("ADT-1" to "444840", "CHD-1" to "300000", "INF-1" to "45000"))
         assertEquals(444840.0, saved["ADT-1"])

@@ -2,6 +2,12 @@ package com.eslam.check.util
 
 /** Only explicitly edited passenger IDs are returned. An empty field clears that passenger alone. */
 object PassengerFareEdits {
+    fun copyWithinClass(drafts: Map<String, String>, classes: Map<String, String?>, id: String, text: String): Map<String, String> {
+        val category = classes[id]?.trim()?.uppercase()
+        val ids = if (category in setOf("ADT", "CHD", "INF") && runCatching { parse(text) }.getOrNull() != null)
+            classes.filterValues { it?.trim()?.uppercase() == category }.keys else setOf(id)
+        return drafts + ids.associateWith { text }
+    }
     fun parse(text: String): Double? {
         if (text.isBlank()) return null
         val clean = text.trim().map { ch ->

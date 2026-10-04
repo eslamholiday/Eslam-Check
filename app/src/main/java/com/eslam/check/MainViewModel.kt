@@ -334,6 +334,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun hidePassenger(id: String) {
+        viewModelScope.launch(Dispatchers.IO) { db.hidePassenger(id); refresh() }
+    }
+
+    fun clearPassengerPhone(id: String) {
+        viewModelScope.launch(Dispatchers.IO) { db.clearPassengerPhone(id); refresh() }
+    }
+
     fun updatePassenger(person: Passenger) {
         viewModelScope.launch(Dispatchers.IO) {
             db.updatePassenger(person)
