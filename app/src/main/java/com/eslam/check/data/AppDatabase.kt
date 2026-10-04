@@ -789,7 +789,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             if (!integrityOk) return false
 
             val version = probe.version
-            if (version !in 1..9) return false
+            if (version !in 1..10) return false
 
             val requiredTables = setOf(
                 "transactions",

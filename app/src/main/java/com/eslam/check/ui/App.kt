@@ -3991,6 +3991,7 @@ private fun TransactionDetailDialog(
                                                 verticalArrangement = Arrangement.spacedBy(3.dp)
                                             ) {
                                                 Text(check.statusText, color = check.color, fontWeight = FontWeight.Bold)
+                                                check.rule?.let { r -> Text(RulePeriods.label(r.effectiveFrom, r.effectiveTo), fontSize = 13.sp) }
                                                 check.rule?.price?.let { price ->
                                                     Text(
                                                         "السعر الافتراضي للفرد: " + formatMoney(price, check.rule.currency),
