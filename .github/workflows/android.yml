@@ -39,7 +39,7 @@ jobs:
           "$signer" sign --ks "$HOME/.android/debug.keystore" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out app/build/outputs/apk/debug/retained-key.apk app/build/outputs/apk/debug/app-debug.apk
           mv app/build/outputs/apk/debug/retained-key.apk app/build/outputs/apk/debug/app-debug.apk
           expected=$(keytool -list -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey | sed -n 's/.*SHA256: //p' | tr -d ':' | tr '[:upper:]' '[:lower:]')
-          actual=$("$signer" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | sed -n 's/Signer #1 certificate SHA-256 digest: //p')
+          actual=$("$signer" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)
           echo "Expected certificate: $expected"
           echo "Actual certificate: $actual"
           test -n "$actual"
