@@ -9,11 +9,11 @@ import java.security.MessageDigest
 import java.util.UUID
 import com.eslam.check.util.RulePeriods
 
-class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 11) {
+class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 12) {
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         val currentVersion = db.version
-        if (currentVersion in 1 until 11) {
+        if (currentVersion in 1 until 12) {
             try {
                 db.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
                     if (cursor.moveToFirst()) { /* force checkpoint result */ }
@@ -21,7 +21,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             } catch (_: Exception) { }
             try {
                 val backupDir = java.io.File(context.filesDir, "backups").apply { mkdirs() }
-                val backup = java.io.File(backupDir, "preupgrade-v" + currentVersion + "-to-v11.db")
+                val backup = java.io.File(backupDir, "preupgrade-v" + currentVersion + "-to-v12.db")
                 val source = context.getDatabasePath("eslam_check.db")
                 if (source.exists() && !backup.exists()) source.copyTo(backup, overwrite = false)
             } catch (_: Exception) { }
@@ -244,6 +244,29 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX idx_visa_price_country ON visa_price_rules(country, currency, active)")
+
+        db.execSQL("""
+            CREATE TABLE fare_memory(
+                id TEXT PRIMARY KEY,
+                airline_key TEXT NOT NULL,
+                airline_label TEXT NOT NULL,
+                route_key TEXT NOT NULL,
+                route_label TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                passenger_type TEXT NOT NULL,
+                total_amount REAL NOT NULL,
+                base_fare REAL NOT NULL,
+                first_seen_date TEXT,
+                last_seen_date TEXT,
+                sample_count INTEGER NOT NULL DEFAULT 1,
+                last_tx_id TEXT,
+                last_operation_no TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                blocked INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_fare_memory_lookup ON fare_memory(airline_key, route_key, currency, passenger_type, total_amount, blocked)")
 
         db.execSQL("""
             CREATE TABLE settings(
@@ -567,6 +590,34 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             db.execSQL("ALTER TABLE passengers ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
         }
 
+        if (oldVersion < 12) {
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS fare_memory(
+                    id TEXT PRIMARY KEY,
+                    airline_key TEXT NOT NULL,
+                    airline_label TEXT NOT NULL,
+                    route_key TEXT NOT NULL,
+                    route_label TEXT NOT NULL,
+                    currency TEXT NOT NULL,
+                    passenger_type TEXT NOT NULL,
+                    total_amount REAL NOT NULL,
+                    base_fare REAL NOT NULL,
+                    first_seen_date TEXT,
+                    last_seen_date TEXT,
+                    sample_count INTEGER NOT NULL DEFAULT 1,
+                    last_tx_id TEXT,
+                    last_operation_no TEXT,
+                    pinned INTEGER NOT NULL DEFAULT 0,
+                    blocked INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_fare_memory_lookup ON fare_memory(airline_key, route_key, currency, passenger_type, total_amount, blocked)")
+            putSettingIfMissing(db, "fare_memory_iqd_tolerance", "500")
+            putSettingIfMissing(db, "fare_memory_usd_tolerance", "0.50")
+            putSettingIfMissing(db, "fare_memory_initialized", "false")
+        }
+
     }
 
     private fun seedDefaults(db: SQLiteDatabase) {
@@ -575,6 +626,9 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
         putSetting(db, "iqd_tolerance", "1000")
         putSetting(db, "visa_usd_tolerance", "0.01")
         putSetting(db, "visa_iqd_tolerance", "1000")
+        putSetting(db, "fare_memory_iqd_tolerance", "500")
+        putSetting(db, "fare_memory_usd_tolerance", "0.50")
+        putSetting(db, "fare_memory_initialized", "false")
         putSetting(db, "issuer_whatsapp", "")
         putSetting(db, "issuer_contact_type", "GROUP")
         putSetting(db, "issuer_group_url", "https://chat.whatsapp.com/CSubCIjAE5Y0qnzWOI5Z6K?s=cl&p=a&mlu=4&ilr=4")
@@ -1009,6 +1063,271 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
 
         return out.take(limit)
     }
+
+    fun ensureFareMemoryInitialized() {
+        if (setting("fare_memory_initialized", "false").toBoolean()) return
+        rebuildFareMemory()
+    }
+
+    fun fareMemories(includeBlocked: Boolean = false): List<FareMemory> {
+        ensureFareMemoryInitialized()
+        val out = mutableListOf<FareMemory>()
+        val where = if (includeBlocked) "" else " WHERE blocked=0"
+        readableDatabase.rawQuery(
+            "SELECT * FROM fare_memory" + where + " ORDER BY pinned DESC, updated_at DESC, sample_count DESC",
+            null
+        ).use { c ->
+            while (c.moveToNext()) out += FareMemory(
+                id = c.s("id"),
+                airline = c.s("airline_label"),
+                route = c.s("route_label"),
+                currency = Currency.valueOf(c.s("currency")),
+                passengerType = c.s("passenger_type"),
+                totalAmount = c.d("total_amount"),
+                baseFare = c.d("base_fare"),
+                firstSeenDate = c.sn("first_seen_date"),
+                lastSeenDate = c.sn("last_seen_date"),
+                sampleCount = c.i("sample_count"),
+                lastTxId = c.sn("last_tx_id"),
+                lastOperationNo = c.sn("last_operation_no"),
+                pinned = c.i("pinned") == 1,
+                blocked = c.i("blocked") == 1,
+                updatedAt = c.l("updated_at")
+            )
+        }
+        return out
+    }
+
+    fun fareMemoryMatch(tx: Transaction, detail: TxPassengerDetail): FareMemoryMatch? {
+        if (tx.type != TxType.TICKET) return null
+        val airlineKey = fareAirlineKey(tx.airline) ?: return null
+        val routeKey = fareRouteKey(tx.route) ?: return null
+        val total = detail.amount ?: return null
+        val passengerType = farePassengerType(detail.passengerType)
+        ensureFareMemoryInitialized()
+        val tolerance = fareTolerance(tx.currency)
+        val candidates = mutableListOf<FareMemory>()
+        readableDatabase.rawQuery(
+            """
+                SELECT * FROM fare_memory
+                WHERE blocked=0 AND airline_key=? AND route_key=? AND currency=? AND passenger_type=?
+                  AND ABS(total_amount-?)<=?
+                ORDER BY pinned DESC, ABS(total_amount-?) ASC, sample_count DESC,
+                         COALESCE(last_seen_date,'') DESC, updated_at DESC
+            """.trimIndent(),
+            arrayOf(airlineKey, routeKey, tx.currency.name, passengerType, total.toString(), tolerance.toString(), total.toString())
+        ).use { c ->
+            while (c.moveToNext()) candidates += FareMemory(
+                id = c.s("id"),
+                airline = c.s("airline_label"),
+                route = c.s("route_label"),
+                currency = Currency.valueOf(c.s("currency")),
+                passengerType = c.s("passenger_type"),
+                totalAmount = c.d("total_amount"),
+                baseFare = c.d("base_fare"),
+                firstSeenDate = c.sn("first_seen_date"),
+                lastSeenDate = c.sn("last_seen_date"),
+                sampleCount = c.i("sample_count"),
+                lastTxId = c.sn("last_tx_id"),
+                lastOperationNo = c.sn("last_operation_no"),
+                pinned = c.i("pinned") == 1,
+                blocked = false,
+                updatedAt = c.l("updated_at")
+            )
+        }
+        val best = candidates.firstOrNull() ?: return null
+        val bestDiff = kotlin.math.abs(best.totalAmount - total)
+        val baseTolerance = if (tx.currency == Currency.USD) 0.01 else 1.0
+        val ambiguityWindow = kotlin.math.max(0.01, tolerance * 0.20)
+        val ambiguous = if (best.pinned) false else candidates.drop(1).any { other ->
+            !other.pinned &&
+                kotlin.math.abs(kotlin.math.abs(other.totalAmount - total) - bestDiff) <= ambiguityWindow &&
+                kotlin.math.abs(other.baseFare - best.baseFare) > baseTolerance
+        }
+        return FareMemoryMatch(best, bestDiff, ambiguous)
+    }
+
+    fun rebuildFareMemory(): Int {
+        val db = writableDatabase
+        db.delete("fare_memory", "pinned=0 AND blocked=0", null)
+        db.update("fare_memory", ContentValues().apply {
+            put("sample_count", 0)
+            putNull("first_seen_date")
+            putNull("last_seen_date")
+        }, "pinned=1 AND blocked=0", null)
+        var learned = 0
+        val txIds = mutableListOf<String>()
+        db.rawQuery(
+            "SELECT id FROM transactions WHERE type=? AND airline IS NOT NULL AND airline<>'' AND route IS NOT NULL AND route<>'' ORDER BY COALESCE(transaction_date,'') ASC, imported_at ASC",
+            arrayOf(TxType.TICKET.name)
+        ).use { c -> while (c.moveToNext()) txIds += c.getString(0) }
+        txIds.forEach { learned += learnFareMemoryFromTransaction(it) }
+        setSetting("fare_memory_initialized", "true")
+        audit("fare_memory", "all", "rebuild", learned.toString())
+        return learned
+    }
+
+    fun learnFareMemoryFromTransaction(txId: String): Int {
+        val tx = transaction(txId) ?: return 0
+        if (tx.type != TxType.TICKET || tx.airline.isNullOrBlank() || tx.route.isNullOrBlank()) return 0
+        var learned = 0
+        txPassengerDetails(txId).forEach { detail ->
+            if (detail.baseFare != null && detail.amount != null && detail.baseFare.isFinite() && detail.amount.isFinite() &&
+                detail.baseFare >= 0.0 && detail.amount >= 0.0) {
+                if (rememberFareSample(tx, detail)) learned++
+            }
+        }
+        return learned
+    }
+
+    private fun rememberFareSample(tx: Transaction, detail: TxPassengerDetail): Boolean {
+        val airlineKey = fareAirlineKey(tx.airline) ?: return false
+        val routeKey = fareRouteKey(tx.route) ?: return false
+        val total = detail.amount ?: return false
+        val base = detail.baseFare ?: return false
+        val passengerType = farePassengerType(detail.passengerType)
+        val tolerance = fareTolerance(tx.currency)
+        val baseTolerance = if (tx.currency == Currency.USD) 0.01 else 1.0
+        val blocked = readableDatabase.rawQuery(
+            """
+                SELECT 1 FROM fare_memory
+                WHERE blocked=1 AND airline_key=? AND route_key=? AND currency=? AND passenger_type=?
+                  AND ABS(total_amount-?)<=? AND ABS(base_fare-?)<=?
+                LIMIT 1
+            """.trimIndent(),
+            arrayOf(airlineKey, routeKey, tx.currency.name, passengerType, total.toString(), tolerance.toString(), base.toString(), baseTolerance.toString())
+        ).use { it.moveToFirst() }
+        if (blocked) return false
+
+        val existingId = readableDatabase.rawQuery(
+            """
+                SELECT id FROM fare_memory
+                WHERE blocked=0 AND airline_key=? AND route_key=? AND currency=? AND passenger_type=?
+                  AND ABS(total_amount-?)<=? AND ABS(base_fare-?)<=?
+                ORDER BY pinned DESC, ABS(total_amount-?) ASC, sample_count DESC LIMIT 1
+            """.trimIndent(),
+            arrayOf(airlineKey, routeKey, tx.currency.name, passengerType, total.toString(), tolerance.toString(), base.toString(), baseTolerance.toString(), total.toString())
+        ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+
+        val now = System.currentTimeMillis()
+        if (existingId != null) {
+            var previousTotal = 0.0
+            var previousCount = 0
+            var previousFirst: String? = null
+            var previousLast: String? = null
+            val found = readableDatabase.rawQuery(
+                "SELECT total_amount,sample_count,first_seen_date,last_seen_date FROM fare_memory WHERE id=?",
+                arrayOf(existingId)
+            ).use { c ->
+                if (!c.moveToFirst()) false else {
+                    previousTotal = c.getDouble(0)
+                    previousCount = c.getInt(1)
+                    previousFirst = if (c.isNull(2)) null else c.getString(2)
+                    previousLast = if (c.isNull(3)) null else c.getString(3)
+                    true
+                }
+            }
+            if (!found) return false
+            val nextCount = previousCount + 1
+            val averagedTotal = if (previousCount <= 0) total
+                else ((previousTotal * previousCount) + total) / nextCount.toDouble()
+            writableDatabase.update("fare_memory", ContentValues().apply {
+                put("airline_label", tx.airline!!.trim())
+                put("route_label", tx.route!!.trim())
+                put("total_amount", averagedTotal)
+                put("base_fare", base)
+                put("sample_count", nextCount)
+                put("first_seen_date", earlierDate(previousFirst, tx.transactionDate))
+                put("last_seen_date", laterDate(previousLast, tx.transactionDate))
+                put("last_tx_id", tx.id)
+                put("last_operation_no", tx.operationNo)
+                put("updated_at", now)
+            }, "id=?", arrayOf(existingId))
+            return true
+        }
+
+        writableDatabase.insert("fare_memory", null, ContentValues().apply {
+            put("id", UUID.randomUUID().toString())
+            put("airline_key", airlineKey)
+            put("airline_label", tx.airline!!.trim())
+            put("route_key", routeKey)
+            put("route_label", tx.route!!.trim())
+            put("currency", tx.currency.name)
+            put("passenger_type", passengerType)
+            put("total_amount", total)
+            put("base_fare", base)
+            put("first_seen_date", tx.transactionDate)
+            put("last_seen_date", tx.transactionDate)
+            put("sample_count", 1)
+            put("last_tx_id", tx.id)
+            put("last_operation_no", tx.operationNo)
+            put("pinned", 0)
+            put("blocked", 0)
+            put("updated_at", now)
+        })
+        return true
+    }
+
+    fun deleteFareMemory(id: String, blockRelearning: Boolean = false): Boolean {
+        val exists = readableDatabase.rawQuery("SELECT 1 FROM fare_memory WHERE id=? LIMIT 1", arrayOf(id)).use { it.moveToFirst() }
+        if (!exists) return false
+        if (blockRelearning) {
+            writableDatabase.update("fare_memory", ContentValues().apply {
+                put("blocked", 1)
+                put("pinned", 0)
+                put("updated_at", System.currentTimeMillis())
+            }, "id=?", arrayOf(id))
+        } else {
+            writableDatabase.delete("fare_memory", "id=?", arrayOf(id))
+        }
+        audit("fare_memory", id, if (blockRelearning) "block" else "delete", null)
+        return true
+    }
+
+    fun setFareMemoryPinned(id: String, pinned: Boolean): Boolean {
+        val changed = writableDatabase.update("fare_memory", ContentValues().apply {
+            put("pinned", if (pinned) 1 else 0)
+            put("updated_at", System.currentTimeMillis())
+        }, "id=? AND blocked=0", arrayOf(id))
+        if (changed > 0) audit("fare_memory", id, if (pinned) "pin" else "unpin", null)
+        return changed > 0
+    }
+
+    private fun fareTolerance(currency: Currency): Double =
+        if (currency == Currency.USD) setting("fare_memory_usd_tolerance", "0.50").toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.50
+        else setting("fare_memory_iqd_tolerance", "500").toDoubleOrNull()?.coerceAtLeast(0.0) ?: 500.0
+
+    private fun fareAirlineKey(value: String?): String? =
+        value?.trim()?.lowercase()?.replace(Regex("[^a-z0-9\u0600-\u06ff]+"), "")?.takeIf { it.isNotBlank() }
+
+    private fun fareRouteKey(value: String?): String? {
+        var route = value?.trim()?.uppercase()?.takeIf { it.isNotBlank() } ?: return null
+        route = route
+            .replace("بغداد", "BGW", ignoreCase = true)
+            .replace("BAGHDAD", "BGW", ignoreCase = true)
+            .replace("عمّان", "AMM", ignoreCase = true)
+            .replace("عمان", "AMM", ignoreCase = true)
+            .replace("AMMAN", "AMM", ignoreCase = true)
+            .replace("→", "-")
+            .replace("↔", "-")
+            .replace("/", "-")
+        route = route.replace(Regex("[^A-Z0-9\u0600-\u06ff]+"), "-").trim('-')
+        return route.takeIf { it.isNotBlank() }
+    }
+
+    private fun farePassengerType(value: String?): String {
+        val raw = value.orEmpty().trim().uppercase()
+        return when {
+            raw in setOf("ADT", "ADULT", "A", "بالغ", "بالغين") || raw.contains("ADULT") -> "ADT"
+            raw in setOf("CHD", "CHILD", "C", "طفل", "أطفال", "اطفال") || raw.contains("CHILD") -> "CHD"
+            raw in setOf("INF", "INFANT", "I", "رضيع", "رضع") || raw.contains("INFANT") -> "INF"
+            raw.isBlank() -> "ADT"
+            else -> raw
+        }
+    }
+
+    private fun earlierDate(a: String?, b: String?): String? = listOfNotNull(a, b).filter { it.isNotBlank() }.minOrNull()
+    private fun laterDate(a: String?, b: String?): String? = listOfNotNull(a, b).filter { it.isNotBlank() }.maxOrNull()
 
     fun setting(key: String, default: String = ""): String {
         readableDatabase.rawQuery("SELECT value FROM settings WHERE key=?", arrayOf(key)).use {
@@ -1707,24 +2026,32 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
 
     fun saveTransactionWithFares(tx: Transaction, fares: Map<String, Double?>, markReviewed: Boolean): Transaction {
         val database = writableDatabase
+        val old = transaction(tx.id)
+        val oldFares = txPassengerDetails(tx.id).associate { it.passenger.id to it.baseFare }
+        var savedResult: Transaction = tx
         database.beginTransaction()
         try {
-            val old = transaction(tx.id)
             val allowed = txPassengerDetails(tx.id).map { it.passenger.id }.toSet()
             require(fares.keys.all { it in allowed }) { "تغيّرت قائمة المسافرين؛ افتح العملية مجددًا" }
             fares.forEach { (passengerId, value) ->
                 require(value == null || (value.isFinite() && value >= 0)) { "سعر أساسي غير صالح" }
                 setPassengerBaseFare(tx.id, passengerId, value)
             }
-            val saved = if (markReviewed) saveAndMarkReviewed(tx) else {
+            savedResult = if (markReviewed) saveAndMarkReviewed(tx) else {
                 updateTransactionFields(tx)
                 transaction(tx.id) ?: tx
             }
             if (old?.type == TxType.UNKNOWN && tx.type != TxType.UNKNOWN) learnClassification(old.rawText, tx.type)
             if (old?.airline != tx.airline) setAirlineForTransaction(tx.id, tx.airline, learnPrefix = true)
             database.setTransactionSuccessful()
-            return saved
-        } finally { database.endTransaction() }
+        } finally {
+            database.endTransaction()
+        }
+        val faresChanged = fares.any { (passengerId, value) -> oldFares[passengerId] != value }
+        if (savedResult.reviewState == ReviewState.REVIEWED && (markReviewed || faresChanged || old?.airline != tx.airline || old?.route != tx.route)) {
+            learnFareMemoryFromTransaction(savedResult.id)
+        }
+        return transaction(savedResult.id) ?: savedResult
     }
 
     fun updateTransactionFields(tx: Transaction) {

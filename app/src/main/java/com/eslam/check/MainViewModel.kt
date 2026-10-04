@@ -52,6 +52,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh(search: String = "", types: Set<TxType> = emptySet(), states: Set<ReviewState> = emptySet()) {
         viewModelScope.launch(Dispatchers.IO) {
+            db.ensureFareMemoryInitialized()
             _transactions.value = db.transactions(search = search, types = types, reviewStates = states, limit = 1000)
             _passengers.value = db.allPassengers(500)
             _stats.value = db.dashboardStats()
@@ -503,6 +504,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try { db.saveVisaPriceRule(rule) } catch (e: IllegalArgumentException) { _message.value = e.message; return@launch }
             _message.value = "تم حفظ سعر الفيزا الافتراضي"
             _settingsRevision.value = _settingsRevision.value + 1
+        }
+    }
+
+    fun fareMemories(): List<FareMemory> = db.fareMemories()
+
+    fun fareMemorySuggestions(tx: Transaction, details: List<TxPassengerDetail>): Map<String, FareMemoryMatch> =
+        details.mapNotNull { detail ->
+            if (detail.baseFare != null) null
+            else db.fareMemoryMatch(tx, detail)?.takeUnless { it.ambiguous }?.let { detail.passenger.id to it }
+        }.toMap()
+
+    fun fareMemoryMatch(tx: Transaction, detail: TxPassengerDetail): FareMemoryMatch? =
+        db.fareMemoryMatch(tx, detail)
+
+    fun rebuildFareMemory() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val count = db.rebuildFareMemory()
+            _message.value = "تمت إعادة بناء ذاكرة الأسعار من التذاكر السابقة: " + count + " عينة"
+            _settingsRevision.value = _settingsRevision.value + 1
+        }
+    }
+
+    fun deleteFareMemory(id: String, blockRelearning: Boolean = false) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (db.deleteFareMemory(id, blockRelearning)) {
+                _message.value = if (blockRelearning) "تم حذف النموذج ومنع إعادة تعلّمه" else "تم حذف نموذج السعر"
+                _settingsRevision.value = _settingsRevision.value + 1
+            }
+        }
+    }
+
+    fun setFareMemoryPinned(id: String, pinned: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (db.setFareMemoryPinned(id, pinned)) {
+                _settingsRevision.value = _settingsRevision.value + 1
+            }
         }
     }
 
