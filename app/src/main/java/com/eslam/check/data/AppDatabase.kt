@@ -1690,6 +1690,28 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
         return transaction(reviewed.id) ?: reviewed
     }
 
+    fun saveTransactionWithFares(tx: Transaction, fares: Map<String, Double?>, markReviewed: Boolean): Transaction {
+        val database = writableDatabase
+        database.beginTransaction()
+        try {
+            val old = transaction(tx.id)
+            val allowed = txPassengerDetails(tx.id).map { it.passenger.id }.toSet()
+            require(fares.keys.all { it in allowed }) { "تغيّرت قائمة المسافرين؛ افتح العملية مجددًا" }
+            fares.forEach { (passengerId, value) ->
+                require(value == null || (value.isFinite() && value >= 0)) { "سعر أساسي غير صالح" }
+                setPassengerBaseFare(tx.id, passengerId, value)
+            }
+            val saved = if (markReviewed) saveAndMarkReviewed(tx) else {
+                updateTransactionFields(tx)
+                transaction(tx.id) ?: tx
+            }
+            if (old?.type == TxType.UNKNOWN && tx.type != TxType.UNKNOWN) learnClassification(old.rawText, tx.type)
+            if (old?.airline != tx.airline) setAirlineForTransaction(tx.id, tx.airline, learnPrefix = true)
+            database.setTransactionSuccessful()
+            return saved
+        } finally { database.endTransaction() }
+    }
+
     fun updateTransactionFields(tx: Transaction) {
         updateTransaction(writableDatabase, tx)
         audit("transaction", tx.id, "edit", "manual edit")

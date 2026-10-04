@@ -206,6 +206,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun saveTransactionWithFares(
+        tx: Transaction,
+        drafts: Map<String, String>,
+        markReviewed: Boolean = false,
+        onComplete: (Boolean) -> Unit
+    ) {
+        viewModelScope.launch {
+            val saved = try {
+                val fares = com.eslam.check.util.PassengerFareEdits.values(drafts)
+                withContext(Dispatchers.IO) {
+                    db.saveTransactionWithFares(tx, fares, markReviewed)
+                }
+            } catch (e: Exception) {
+                _message.value = "تعذر الحفظ: " + (e.message ?: "خطأ غير معروف")
+                null
+            }
+            if (saved != null) {
+                _transactions.value = _transactions.value.map { if (it.id == saved.id) saved else it }
+                _message.value = "تم حفظ العملية وأسعار المسافرين كلٌ على حدة"
+                refresh()
+            }
+            onComplete(saved != null)
+        }
+    }
+
     fun saveAndReview(tx: Transaction, onComplete: (Boolean) -> Unit) {
         viewModelScope.launch {
             val result = try {

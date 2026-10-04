@@ -51,6 +51,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.eslam.check.MainViewModel
 import com.eslam.check.data.*
+import com.eslam.check.util.PassengerFareEdits
 import com.eslam.check.util.RulePeriods
 import com.eslam.check.util.CommissionEngine
 import kotlinx.coroutines.Dispatchers
@@ -3552,7 +3553,7 @@ private fun TransactionDetailDialog(
     var commissionDetailsExpanded by remember(id) {
         mutableStateOf(details.any { it.baseFare == null })
     }
-    var baseFareDrafts by remember(id) { mutableStateOf<Map<String, Double?>>(emptyMap()) }
+    var baseFareDrafts by remember(id) { mutableStateOf<Map<String, String>>(emptyMap()) }
     var attachments by remember(id) { mutableStateOf(vm.transactionAttachments(id)) }
     var receiptPreview by remember { mutableStateOf<TransactionAttachment?>(null) }
     var replaceAttachmentId by remember { mutableStateOf<String?>(null) }
@@ -3588,7 +3589,7 @@ private fun TransactionDetailDialog(
     val rule = vm.ruleForTransaction(edit)
     val effectiveDetails = details.map { detail ->
         if (baseFareDrafts.containsKey(detail.passenger.id)) {
-            detail.copy(baseFare = baseFareDrafts[detail.passenger.id])
+            detail.copy(baseFare = runCatching { PassengerFareEdits.parse(baseFareDrafts.getValue(detail.passenger.id)) }.getOrNull())
         } else detail
     }
     val tolerance = if (edit.currency == Currency.USD) {
@@ -3820,20 +3821,8 @@ private fun TransactionDetailDialog(
                                     detail = d,
                                     commissionForPassenger = rowCommission,
                                     inferredCommission = commission.inferredFromDiscount,
-                                    onBaseFareDraftChange = { passengerId, value ->
-                                        baseFareDrafts = baseFareDrafts + (passengerId to value)
-                                    },
-                                    onBaseFareCommit = { passengerId, value ->
-                                        val others = effectiveDetails.filter { it.passenger.id != passengerId }
-                                        val applyToAll = value != null && others.isNotEmpty() && others.all { it.baseFare == null }
-                                        if (applyToAll) {
-                                            baseFareDrafts = effectiveDetails.associate { it.passenger.id to value }
-                                            vm.setPassengerBaseFareForAll(edit.id, value)
-                                        } else {
-                                            baseFareDrafts = baseFareDrafts + (passengerId to value)
-                                            vm.setPassengerBaseFare(edit.id, passengerId, value)
-                                        }
-                                    },
+                                    baseText = baseFareDrafts[d.passenger.id] ?: d.baseFare?.let(::compactNumber).orEmpty(),
+                                    onBaseFareTextChange = { text -> baseFareDrafts = baseFareDrafts + (d.passenger.id to text) },
                                     onOpenPassenger = { selectedPassenger = it },
                                     onDeleteLink = { deletePassengerTarget = it }
                                 )
@@ -4396,7 +4385,7 @@ private fun TransactionDetailDialog(
                         onClick = {
                             reviewSaving = true
                             val reviewedEdit = edit.copy(reviewState = ReviewState.REVIEWED)
-                            vm.saveAndReview(reviewedEdit) { success ->
+                            vm.saveTransactionWithFares(edit, baseFareDrafts.toMap(), markReviewed = true) { success ->
                                 reviewSaving = false
                                 if (success) {
                                     edit = reviewedEdit
@@ -4417,8 +4406,13 @@ private fun TransactionDetailDialog(
 
                     OutlinedButton(
                         modifier = Modifier.weight(1f),
+                        enabled = !reviewSaving,
                         onClick = {
-                            if (plainNextId != null) onNext(plainNextId) else onDismiss()
+                            reviewSaving = true
+                            vm.saveTransactionWithFares(edit, baseFareDrafts.toMap()) { success ->
+                                reviewSaving = false
+                                if (success) { if (plainNextId != null) onNext(plainNextId) else onDismiss() }
+                            }
                         }
                     ) {
                         Icon(Icons.Rounded.ArrowForward, null)
@@ -4428,9 +4422,10 @@ private fun TransactionDetailDialog(
 
                     FilledTonalButton(
                         modifier = Modifier.weight(1f),
+                        enabled = !reviewSaving,
                         onClick = {
-                            vm.updateTransaction(edit)
-                            if (edit.airline != tx.airline) vm.setAirline(edit.id, edit.airline)
+                            reviewSaving = true
+                            vm.saveTransactionWithFares(edit, baseFareDrafts.toMap()) { reviewSaving = false }
                         }
                     ) {
                         Icon(Icons.Rounded.Save, null)
@@ -4798,33 +4793,16 @@ private fun PassengerAuditCard(
     detail: TxPassengerDetail,
     commissionForPassenger: Double?,
     inferredCommission: Boolean,
-    onBaseFareDraftChange: (String, Double?) -> Unit,
-    onBaseFareCommit: (String, Double?) -> Unit,
+    baseText: String,
+    onBaseFareTextChange: (String) -> Unit,
     onOpenPassenger: (Passenger) -> Unit,
     onDeleteLink: (Passenger) -> Unit
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
-    var baseText by remember(detail.passenger.id, detail.baseFare) {
-        mutableStateOf(detail.baseFare?.let(::compactNumber).orEmpty())
-    }
-    var lastCommitted by remember(detail.passenger.id, detail.baseFare) {
-        mutableStateOf(detail.baseFare)
-    }
-
-    fun commitBaseFare() {
-        val value = when {
-            baseText.isBlank() -> null
-            else -> baseText.toDoubleOrNull() ?: return
-        }
-        if (value != lastCommitted) {
-            onBaseFareCommit(detail.passenger.id, value)
-            lastCommitted = value
-        }
-    }
-
-    val invalidBase = baseText.isNotBlank() && baseText.toDoubleOrNull() == null
-    val base = baseText.toDoubleOrNull()
+    val parsedBase = runCatching { PassengerFareEdits.parse(baseText) }
+    val invalidBase = parsedBase.isFailure
+    val base = parsedBase.getOrNull()
     val taxes = if (detail.amount != null && base != null) detail.amount - base else null
 
     Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
@@ -4871,16 +4849,8 @@ private fun PassengerAuditCard(
 
             OutlinedTextField(
                 value = baseText,
-                onValueChange = { text ->
-                    baseText = text
-                    when {
-                        text.isBlank() -> onBaseFareDraftChange(detail.passenger.id, null)
-                        else -> text.toDoubleOrNull()?.let { onBaseFareDraftChange(detail.passenger.id, it) }
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged { state -> if (!state.isFocused) commitBaseFare() },
+                onValueChange = onBaseFareTextChange,
+                modifier = Modifier.fillMaxWidth(),
                 label = { Text("Base Fare بدون ضرائب") },
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Decimal,
@@ -4888,7 +4858,6 @@ private fun PassengerAuditCard(
                 ),
                 keyboardActions = KeyboardActions(
                     onDone = {
-                        commitBaseFare()
                         focusManager.clearFocus()
                     }
                 ),
