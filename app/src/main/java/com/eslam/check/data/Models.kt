@@ -197,6 +197,30 @@ data class VisaPriceRule(
     val effectiveTo: String? = null
 )
 
+data class FareMemory(
+    val id: String,
+    val airline: String,
+    val route: String,
+    val currency: Currency,
+    val passengerType: String,
+    val totalAmount: Double,
+    val baseFare: Double,
+    val firstSeenDate: String? = null,
+    val lastSeenDate: String? = null,
+    val sampleCount: Int = 1,
+    val lastTxId: String? = null,
+    val lastOperationNo: String? = null,
+    val pinned: Boolean = false,
+    val blocked: Boolean = false,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class FareMemoryMatch(
+    val memory: FareMemory,
+    val difference: Double,
+    val ambiguous: Boolean = false
+)
+
 data class ResponsibleContact(
     val id: String,
     val name: String,
