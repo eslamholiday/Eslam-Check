@@ -604,13 +604,7 @@ private fun TransactionCard(
 ) {
     val airlineMissing = tx.type == TxType.TICKET && tx.currency == Currency.USD && tx.airline.isNullOrBlank()
     val typeAccent = operationTypeColor(vm, tx.type)
-    val accent = when {
-        tx.changedAfterReview -> Warn
-        tx.type == TxType.UNKNOWN || airlineMissing -> Mystery
-        tx.reviewState == ReviewState.REVIEWED -> Good
-        tx.reviewState == ReviewState.FOLLOW_UP -> Warn
-        else -> typeAccent
-    }
+    val accent = typeAccent
     val auditSummary = cardAuditSummary(vm, tx)
     val cardPassengerNames = if (tx.type != TxType.PAYMENT) {
         vm.txPassengerDetails(tx.id)
@@ -840,11 +834,17 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
     val transactions by vm.transactions.collectAsState()
     val activityMap = remember(passengers, transactions) { vm.passengerActivityStats() }
     var search by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf(PassengerCategory.ALL) }
-    var ratingFilter by remember { mutableStateOf<Int?>(null) }
-    var favoritesOnly by remember { mutableStateOf(false) }
-    var unclassifiedOnly by remember { mutableStateOf(false) }
-    var sortMode by remember { mutableStateOf("NAME") }
+    var category by remember {
+        mutableStateOf(runCatching { PassengerCategory.valueOf(vm.setting("passengers_filter_category", PassengerCategory.ALL.name)) }.getOrDefault(PassengerCategory.ALL))
+    }
+    var ratingFilter by remember {
+        mutableStateOf(vm.setting("passengers_filter_rating", "").toIntOrNull()?.takeIf { it in 0..5 })
+    }
+    var favoritesOnly by remember { mutableStateOf(vm.setting("passengers_filter_favorites", "false").toBoolean()) }
+    var unclassifiedOnly by remember { mutableStateOf(vm.setting("passengers_filter_unclassified", "false").toBoolean()) }
+    var sortMode by remember {
+        mutableStateOf(vm.setting("passengers_sort_mode", "HIGH").takeIf { it in setOf("NAME", "HIGH", "LOW", "RECENT", "OPS") } ?: "HIGH")
+    }
     var filtersOpen by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Passenger?>(null) }
     var mergeMode by remember { mutableStateOf(false) }
@@ -1043,17 +1043,26 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                         PassengerCategory.DEPENDENT to "التابعون",
                         PassengerCategory.INDEPENDENT to "المستقلون"
                     ).forEach { (key, label) ->
-                        FilterChip(selected = category == key, onClick = { category = key }, label = { Text(label) })
+                        FilterChip(selected = category == key, onClick = {
+                            category = key
+                            vm.setSetting("passengers_filter_category", key.name)
+                        }, label = { Text(label) })
                     }
                 }
 
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("المفضّلون 4–5 نجوم", Modifier.weight(1f))
-                    Switch(checked = favoritesOnly, onCheckedChange = { favoritesOnly = it })
+                    Switch(checked = favoritesOnly, onCheckedChange = {
+                        favoritesOnly = it
+                        vm.setSetting("passengers_filter_favorites", it.toString())
+                    })
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("غير المصنفين فقط", Modifier.weight(1f))
-                    Switch(checked = unclassifiedOnly, onCheckedChange = { unclassifiedOnly = it })
+                    Switch(checked = unclassifiedOnly, onCheckedChange = {
+                        unclassifiedOnly = it
+                        vm.setSetting("passengers_filter_unclassified", it.toString())
+                    })
                 }
 
                 Text("النجوم", fontWeight = FontWeight.SemiBold)
@@ -1063,19 +1072,28 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                 ) {
                     FilterChip(
                         selected = ratingFilter == null,
-                        onClick = { ratingFilter = null },
+                        onClick = {
+                            ratingFilter = null
+                            vm.setSetting("passengers_filter_rating", "")
+                        },
                         label = { Text("الكل") }
                     )
                     (5 downTo 1).forEach { stars ->
                         FilterChip(
                             selected = ratingFilter == stars,
-                            onClick = { ratingFilter = if (ratingFilter == stars) null else stars },
+                            onClick = {
+                                ratingFilter = if (ratingFilter == stars) null else stars
+                                vm.setSetting("passengers_filter_rating", ratingFilter?.toString().orEmpty())
+                            },
                             label = { Text(stars.toString() + " ★") }
                         )
                     }
                     FilterChip(
                         selected = ratingFilter == 0,
-                        onClick = { ratingFilter = if (ratingFilter == 0) null else 0 },
+                        onClick = {
+                            ratingFilter = if (ratingFilter == 0) null else 0
+                            vm.setSetting("passengers_filter_rating", ratingFilter?.toString().orEmpty())
+                        },
                         label = { Text("بدون") }
                     )
                 }
@@ -1092,7 +1110,10 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                         "RECENT" to "آخر نشاط",
                         "OPS" to "الأكثر عمليات"
                     ).forEach { (key, label) ->
-                        FilterChip(selected = sortMode == key, onClick = { sortMode = key }, label = { Text(label) })
+                        FilterChip(selected = sortMode == key, onClick = {
+                            sortMode = key
+                            vm.setSetting("passengers_sort_mode", key)
+                        }, label = { Text(label) })
                     }
                 }
 
@@ -1102,7 +1123,12 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
                         ratingFilter = null
                         favoritesOnly = false
                         unclassifiedOnly = false
-                        sortMode = "NAME"
+                        sortMode = "HIGH"
+                        vm.setSetting("passengers_filter_category", PassengerCategory.ALL.name)
+                        vm.setSetting("passengers_filter_rating", "")
+                        vm.setSetting("passengers_filter_favorites", "false")
+                        vm.setSetting("passengers_filter_unclassified", "false")
+                        vm.setSetting("passengers_sort_mode", "HIGH")
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -1942,6 +1968,7 @@ private fun MoreScreen(vm: MainViewModel) {
         "bridge" -> BridgeSettings(vm) { page = "root" }
         "review" -> ReviewSettings(vm) { page = "root" }
         "commissions" -> CommissionSettings(vm) { page = "root" }
+        "fare_memory" -> FareMemorySettings(vm) { page = "root" }
         "whatsapp" -> WhatsAppSettings(vm) { page = "root" }
         "visas" -> VisaSettings(vm) { page = "root" }
         "payments" -> PaymentsSettings(vm) { page = "root" }
@@ -2154,6 +2181,7 @@ private fun SettingsRoot(onOpen: (String) -> Unit) {
         Triple("bridge", "Eslam Bridge", Icons.Rounded.Hub),
         Triple("review", "المراجعة والكشوفات", Icons.Rounded.FactCheck),
         Triple("commissions", "التذاكر والعمولات", Icons.Rounded.Percent),
+        Triple("fare_memory", "ذاكرة أسعار التذاكر", Icons.Rounded.AutoAwesome),
         Triple("visas", "الفيز", Icons.Rounded.Description),
         Triple("people", "المسافرون والمسؤولون", Icons.Rounded.Groups),
         Triple("payments", "التسديدات والمحاسب", Icons.Rounded.Payments),
@@ -2781,6 +2809,196 @@ private fun AirlineSelectionDialog(
         },
         confirmButton = {}
     )
+}
+
+@Composable
+private fun FareMemorySettings(vm: MainViewModel, onBack: () -> Unit) {
+    val revision by vm.settingsRevision.collectAsState()
+    var search by remember { mutableStateOf("") }
+    var iqdTolerance by remember(revision) { mutableStateOf(vm.setting("fare_memory_iqd_tolerance", "500")) }
+    var usdTolerance by remember(revision) { mutableStateOf(vm.setting("fare_memory_usd_tolerance", "0.50")) }
+    var deleteTarget by remember { mutableStateOf<FareMemory?>(null) }
+    val rows = remember(revision) { vm.fareMemories() }
+    val visible = remember(rows, search) {
+        if (search.isBlank()) rows else rows.filter {
+            it.airline.contains(search, true) ||
+                it.route.contains(search, true) ||
+                it.passengerType.contains(search, true) ||
+                compactNumber(it.totalAmount).contains(search) ||
+                compactNumber(it.baseFare).contains(search)
+        }
+    }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item { SettingsHeader("ذاكرة أسعار التذاكر", onBack) }
+        item {
+            SettingsInfoCard(
+                "Base Fare الذكي",
+                "يتعلم من التذاكر السابقة والجديدة حسب شركة الطيران + المسار + العملة + نوع المسافر + Total لكل مسافر. إذا تغيّر Total بشكل واضح يحفظ نموذجًا جديدًا ولا يستبدل الأسعار القديمة."
+            )
+        }
+        item {
+            Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("هامش مطابقة Total", fontWeight = FontWeight.Bold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            iqdTolerance,
+                            { iqdTolerance = it },
+                            Modifier.weight(1f),
+                            label = { Text("IQD") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            usdTolerance,
+                            { usdTolerance = it },
+                            Modifier.weight(1f),
+                            label = { Text("USD") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                vm.setSetting("fare_memory_iqd_tolerance", iqdTolerance.toDoubleOrNull()?.coerceAtLeast(0.0)?.toString() ?: "500")
+                                vm.setSetting("fare_memory_usd_tolerance", usdTolerance.toDoubleOrNull()?.coerceAtLeast(0.0)?.toString() ?: "0.50")
+                            }
+                        ) {
+                            Icon(Icons.Rounded.Save, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("حفظ")
+                        }
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = { vm.rebuildFareMemory() }
+                        ) {
+                            Icon(Icons.Rounded.Refresh, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("تعلم من السابق")
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            OutlinedTextField(
+                search,
+                { search = it },
+                Modifier.fillMaxWidth(),
+                label = { Text("بحث بالخط / المسار / Total / Base Fare") },
+                leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                singleLine = true
+            )
+        }
+        item {
+            Text(
+                visible.size.toString() + " نموذج سعر محفوظ",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp
+            )
+        }
+        if (visible.isEmpty()) {
+            item {
+                Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                    Text(
+                        "لا توجد نماذج مطابقة بعد. اضغط «تعلم من السابق» أو راجع تذاكر جديدة مع Base Fare.",
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else {
+            items(visible, key = { it.id }) { memory ->
+                Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(memory.airline, fontWeight = FontWeight.Bold)
+                                Text(
+                                    memory.route + " • " + farePassengerTypeLabel(memory.passengerType) + " • " + memory.currency.name,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = { vm.setFareMemoryPinned(memory.id, !memory.pinned) }) {
+                                Icon(
+                                    if (memory.pinned) Icons.Rounded.Star else Icons.Rounded.StarOutline,
+                                    if (memory.pinned) "إلغاء التثبيت" else "تثبيت",
+                                    tint = if (memory.pinned) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = { deleteTarget = memory }) {
+                                Icon(Icons.Rounded.DeleteOutline, "حذف", tint = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                        Text(
+                            "Total: " + formatMoney(memory.totalAmount, memory.currency) +
+                                "  →  Base Fare: " + formatMoney(memory.baseFare, memory.currency),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            "ظهر " + memory.sampleCount + " مرة" +
+                                listOfNotNull(memory.firstSeenDate?.let { "من " + it }, memory.lastSeenDate?.let { "آخر " + it }).joinToString(" • ").let { if (it.isBlank()) "" else " • " + it },
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        memory.lastOperationNo?.let {
+                            Text("آخر عملية: #" + it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(20.dp)) }
+    }
+
+    deleteTarget?.let { memory ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("حذف نموذج السعر") },
+            text = {
+                Text(
+                    memory.airline + " • " + memory.route + "\n" +
+                        "Total " + formatMoney(memory.totalAmount, memory.currency) +
+                        " → Base Fare " + formatMoney(memory.baseFare, memory.currency)
+                )
+            },
+            confirmButton = {
+                Button(
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    onClick = {
+                        vm.deleteFareMemory(memory.id, blockRelearning = false)
+                        deleteTarget = null
+                    }
+                ) { Text("حذف") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = {
+                            vm.deleteFareMemory(memory.id, blockRelearning = true)
+                            deleteTarget = null
+                        }
+                    ) { Text("حذف ومنع إعادة التعلم") }
+                    TextButton(onClick = { deleteTarget = null }) { Text("إلغاء") }
+                }
+            }
+        )
+    }
+}
+
+private fun farePassengerTypeLabel(value: String): String = when (value.uppercase()) {
+    "ADT" -> "بالغ"
+    "CHD" -> "طفل"
+    "INF" -> "رضيع"
+    else -> value
 }
 
 @Composable
@@ -3590,6 +3808,27 @@ private fun TransactionDetailDialog(
         mutableStateOf(details.any { it.baseFare == null })
     }
     var baseFareDrafts by remember(id) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var autoFarePassengerIds by remember(id) { mutableStateOf<Set<String>>(emptySet()) }
+    val fareMemoryRevision by vm.settingsRevision.collectAsState()
+    val learnedFareMatches = remember(id, details, edit.airline, edit.route, edit.currency, edit.type, fareMemoryRevision) {
+        vm.fareMemorySuggestions(edit, details)
+    }
+    LaunchedEffect(id, learnedFareMatches) {
+        val next = baseFareDrafts.toMutableMap()
+        autoFarePassengerIds.forEach { passengerId ->
+            if (details.firstOrNull { it.passenger.id == passengerId }?.baseFare == null) next.remove(passengerId)
+        }
+        val nextAuto = mutableSetOf<String>()
+        details.forEach { detail ->
+            val match = learnedFareMatches[detail.passenger.id]
+            if (detail.baseFare == null && match != null) {
+                next[detail.passenger.id] = compactNumber(match.memory.baseFare)
+                nextAuto += detail.passenger.id
+            }
+        }
+        baseFareDrafts = next
+        autoFarePassengerIds = nextAuto
+    }
     var attachments by remember(id) { mutableStateOf(vm.transactionAttachments(id)) }
     var receiptPreview by remember { mutableStateOf<TransactionAttachment?>(null) }
     var replaceAttachmentId by remember { mutableStateOf<String?>(null) }
@@ -3697,7 +3936,8 @@ private fun TransactionDetailDialog(
                         ) {
                             Text(
                                 labelFor(edit.type) + " • " + edit.currency.name,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = operationTypeColor(vm, edit.type),
+                                fontWeight = FontWeight.SemiBold
                             )
                             edit.operationNo?.let { op ->
                                 Text(
@@ -3864,7 +4104,9 @@ private fun TransactionDetailDialog(
                                     commissionForPassenger = rowCommission,
                                     inferredCommission = commission.inferredFromDiscount,
                                     baseText = baseFareDrafts[d.passenger.id] ?: d.baseFare?.let(::compactNumber).orEmpty(),
+                                    learnedMatch = learnedFareMatches[d.passenger.id],
                                     onBaseFareTextChange = { text ->
+                                        autoFarePassengerIds = emptySet()
                                         baseFareDrafts = PassengerFareEdits.copyWithinClass(baseFareDrafts,
                                             details.associate { it.passenger.id to it.passengerType }, d.passenger.id, text)
                                     },
@@ -4867,6 +5109,7 @@ private fun PassengerAuditCard(
     commissionForPassenger: Double?,
     inferredCommission: Boolean,
     baseText: String,
+    learnedMatch: FareMemoryMatch? = null,
     onBaseFareTextChange: (String) -> Unit,
     onOpenPassenger: (Passenger) -> Unit,
     onDeleteLink: (Passenger) -> Unit
@@ -4919,6 +5162,22 @@ private fun PassengerAuditCard(
             }
 
             detail.amount?.let { Text("Total المصدر: " + formatMoney(it, tx.currency)) }
+
+            learnedMatch?.let { match ->
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Good.copy(alpha = 0.10f)
+                ) {
+                    Text(
+                        "✓ Base Fare تلقائي • مطابق لـ " + match.memory.sampleCount + " تذكرة سابقة • فرق Total " +
+                            compactNumber(match.difference) + " " + tx.currency.name,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 6.dp),
+                        fontSize = 11.sp,
+                        color = Good,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
 
             OutlinedTextField(
                 value = baseText,
