@@ -342,9 +342,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) { db.clearPassengerPhone(id); refresh() }
     }
 
-    fun updatePassenger(person: Passenger) {
+    fun updatePassenger(person: Passenger, updateResponsibility: Boolean = false, forceConflicts: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
             db.updatePassenger(person)
+            if (updateResponsibility) db.assignResponsible(person.id, person.responsibleId, person.responsibleRelation, forceConflicts)
             refresh()
         }
     }

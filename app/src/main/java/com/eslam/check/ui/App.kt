@@ -1541,7 +1541,7 @@ private fun PassengerDetailDialog(
                             Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
                                     Text("تعيين كمسؤول", fontWeight = FontWeight.Bold)
-                                    Text("يبقى ضمن جميع المسافرين ويضم التابعين تحته.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("إلغاء الصفة يفك ارتباط التابعين به ويحفظ عملياتهم.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Switch(edit.isResponsible, { edit = edit.copy(isResponsible = it) })
                             }
@@ -1642,10 +1642,9 @@ private fun PassengerDetailDialog(
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         val savedEdit = edit.copy(phone = normalizeIraqPhoneForStorage(edit.phone))
-                        vm.updatePassenger(savedEdit)
-                        if (savedEdit.responsibleId != passenger.responsibleId || savedEdit.responsibleRelation != passenger.responsibleRelation) {
-                            vm.assignResponsible(savedEdit.id, savedEdit.responsibleId, savedEdit.responsibleRelation, forceProfileResponsibility)
-                        }
+                        vm.updatePassenger(savedEdit,
+                            updateResponsibility = savedEdit.responsibleId != passenger.responsibleId || savedEdit.responsibleRelation != passenger.responsibleRelation,
+                            forceConflicts = forceProfileResponsibility)
                         onDismiss()
                     }
                 ) {
