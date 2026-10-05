@@ -54,6 +54,7 @@ import com.eslam.check.data.*
 import com.eslam.check.util.PassengerFareEdits
 import com.eslam.check.util.RulePeriods
 import com.eslam.check.util.CommissionEngine
+import com.eslam.check.util.OperationFilters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -242,9 +243,58 @@ fun EslamCheckApp(vm: MainViewModel) {
 }
 
 @Composable
+private fun SearchClear(value: String, onClear: () -> Unit) {
+    if (value.isNotEmpty()) IconButton(onClick = onClear) { Icon(Icons.Rounded.Close, "مسح البحث") }
+}
+
+@Composable
+private fun OperationFilterBar(
+    currency: Currency?, onCurrency: (Currency?) -> Unit,
+    from: String, onFrom: (String) -> Unit, to: String, onTo: (String) -> Unit,
+    newest: Boolean, onNewest: (Boolean) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        FilterChip(currency == null, { onCurrency(null) }, label = { Text("العملتان") })
+        Currency.entries.forEach { c -> FilterChip(currency == c, { onCurrency(c) }, label = { Text(c.name) }) }
+        FilterChip(expanded || from.isNotBlank() || to.isNotBlank(), { expanded = !expanded }, label = { Text("التاريخ والفرز") })
+    }
+    if (expanded) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.weight(1f)) { PeriodDateField("من", from, onFrom) }
+            Box(Modifier.weight(1f)) { PeriodDateField("إلى", to, onTo) }
+        }
+        if (!RulePeriods.validRange(from, to)) Text("تاريخ البداية يجب ألا يتجاوز النهاية", color = Bad)
+        TextButton(onClick = { onNewest(!newest) }) { Text(if (newest) "الترتيب: الأحدث أولاً" else "الترتيب: الأقدم أولاً") }
+    }
+}
+
+@Composable
+private fun CurrencyTotals(title: String, usd: Double, iqd: Double, currency: Currency? = null) {
+    Text(title, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(Currency.USD to usd, Currency.IQD to iqd).filter { currency == null || it.first == currency }.forEach { (c, amount) ->
+            Surface(Modifier.weight(1f), shape = RoundedCornerShape(16.dp), tonalElevation = 3.dp) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(c.name, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(formatMoney(amount, c), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun DashboardScreen(vm: MainViewModel, onOpenReview: (String) -> Unit, onDetail: (String) -> Unit) {
     val stats by vm.stats.collectAsState()
     val txs by vm.transactions.collectAsState()
+    var currency by remember { mutableStateOf<Currency?>(null) }
+    var from by remember { mutableStateOf("") }
+    var to by remember { mutableStateOf("") }
+    var newest by remember { mutableStateOf(true) }
+    val visible = remember(txs, currency, from, to, newest) {
+        OperationFilters.sorted(txs.filter { (currency == null || it.currency == currency) && OperationFilters.inPeriod(it, from, to) }, newest)
+    }
     var bridgeOpen by remember { mutableStateOf(false) }
     var showPdfExperimental by remember { mutableStateOf(false) }
     var importCurrency by remember { mutableStateOf<Currency?>(null) }
@@ -258,24 +308,13 @@ private fun DashboardScreen(vm: MainViewModel, onOpenReview: (String) -> Unit, o
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            Text("Eslam Check", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-            Text("Travel • Review • Finance", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatCard("غير مراجع", stats.unreviewed, Modifier.weight(1f)) { onOpenReview("OPEN") }
-                StatCard("مبهم", stats.ambiguous, Modifier.weight(1f)) { onOpenReview("AMBIG") }
-                StatCard("تغيّر", stats.changed, Modifier.weight(1f)) { onOpenReview("CHANGED") }
-            }
-        }
-        item {
             Surface(shape = RoundedCornerShape(18.dp), tonalElevation = 2.dp) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Icon(Icons.Rounded.Hub, null, tint = MaterialTheme.colorScheme.secondary)
                         Column {
                             Text("Eslam Bridge", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                            Text("الصق نص ECX الذي أرسله لك ChatGPT. يقبل الدولار والدينار معًا.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("الصق Eslam Check Language الذي أرسله لك ChatGPT. يقبل الدولار والدينار معًا.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     Button(
@@ -284,7 +323,7 @@ private fun DashboardScreen(vm: MainViewModel, onOpenReview: (String) -> Unit, o
                     ) {
                         Icon(Icons.Rounded.ContentPaste, null)
                         Spacer(Modifier.width(6.dp))
-                        Text("لصق واستيراد نص ECX")
+                        Text("لصق واستيراد Eslam Check Language")
                     }
                     if (vm.setting("bridge_pdf_experimental", "false").toBoolean()) {
                         TextButton(onClick = { showPdfExperimental = !showPdfExperimental }) {
@@ -307,12 +346,28 @@ private fun DashboardScreen(vm: MainViewModel, onOpenReview: (String) -> Unit, o
             }
         }
         item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OperationFilterBar(currency, { currency = it }, from, { from = it }, to, { to = it }, newest, { newest = it })
+                CurrencyTotals("أرباح التذاكر • مجموع Discount",
+                    OperationFilters.ticketProfit(visible, Currency.USD), OperationFilters.ticketProfit(visible, Currency.IQD), currency)
+                Text("العمولات المسجلة للتذاكر فقط • " + visible.count { it.type == TxType.TICKET } + " تذكرة/عملية", fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatCard("غير مراجع", stats.unreviewed, Modifier.weight(1f)) { onOpenReview("OPEN") }
+                StatCard("مبهم", stats.ambiguous, Modifier.weight(1f)) { onOpenReview("AMBIG") }
+                StatCard("تغيّر", stats.changed, Modifier.weight(1f)) { onOpenReview("CHANGED") }
+            }
+        }
+        item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("آخر العمليات", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 TextButton(onClick = { onOpenReview("ALL") }) { Text("عرض الكل") }
             }
         }
-        items(txs.take(8), key = { it.id }) { tx ->
+        items(visible.take(8), key = { it.id }) { tx ->
             TransactionCard(vm, tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
         }
     }
@@ -442,13 +497,16 @@ private fun ReviewScreen(
     var typeFilter by remember { mutableStateOf<Set<TxType>>(emptySet()) }
     var statusFilter by remember(initialStatus) { mutableStateOf(initialStatus) }
 
-    LaunchedEffect(search) { vm.refresh(search = search) }
-    DisposableEffect(Unit) {
-        onDispose { vm.refresh() }
-    }
+    var currency by remember { mutableStateOf<Currency?>(null) }
+    var from by remember { mutableStateOf("") }
+    var to by remember { mutableStateOf("") }
+    var newest by remember { mutableStateOf(true) }
+    val searchIndex by vm.operationSearchIndex.collectAsState()
 
-    val filtered = remember(all, typeFilter, statusFilter) {
-        all.filter { tx ->
+    val filtered = remember(all, searchIndex, typeFilter, statusFilter, search, currency, from, to, newest) {
+        OperationFilters.sorted(all.filter { tx ->
+            (currency == null || tx.currency == currency) && OperationFilters.inPeriod(tx, from, to) &&
+                OperationFilters.matches(tx, search, searchIndex[tx.id].orEmpty()) &&
             (typeFilter.isEmpty() || tx.type in typeFilter) &&
                 when (statusFilter) {
                     "OPEN" -> tx.reviewState != ReviewState.REVIEWED
@@ -458,7 +516,7 @@ private fun ReviewScreen(
                     "REVIEWED" -> tx.reviewState == ReviewState.REVIEWED
                     else -> true
                 }
-        }
+        }, newest)
     }
     val queue = remember(filtered) { filtered.map { it.id } }
 
@@ -481,9 +539,12 @@ private fun ReviewScreen(
             onValueChange = { search = it },
             modifier = Modifier.fillMaxWidth(),
             leadingIcon = { Icon(Icons.Rounded.Search, null) },
-            label = { Text("PNR / عملية / مسافر / جواز / تذكرة / خط") },
+            label = { Text("PNR / اسم / مبلغ / تاريخ / رقم العملية") },
+            trailingIcon = { SearchClear(search) { search = "" } },
             singleLine = true
         )
+
+        OperationFilterBar(currency, { currency = it }, from, { from = it }, to, { to = it }, newest, { newest = it })
 
         Text("نوع العملية", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(
@@ -501,7 +562,8 @@ private fun ReviewScreen(
                 TxType.CHANGE to "تغيير",
                 TxType.REFUND to "استرجاع",
                 TxType.PAYMENT to "تسديد",
-                TxType.VOID to "Void"
+                TxType.VOID to "Void",
+                TxType.REISSUE to "إعادة إصدار", TxType.FEE to "رسوم", TxType.UNKNOWN to "غير محدد"
             ).forEach { (type, label) ->
                 FilterChip(
                     selected = type in typeFilter,
@@ -628,7 +690,7 @@ private fun TransactionCard(
             Box(Modifier.width(5.dp).fillMaxHeight().background(accent))
             Column(Modifier.weight(1f).padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text(tx.pnr ?: labelFor(tx.type), fontWeight = FontWeight.Bold)
+                    Text(if (tx.type == TxType.PAYMENT) "تسديد #" + (tx.operationNo ?: "غير محدد") else tx.pnr ?: labelFor(tx.type), fontWeight = FontWeight.Bold)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         when (tx.reviewState) {
                             ReviewState.REVIEWED -> {
@@ -651,6 +713,9 @@ private fun TransactionCard(
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Text("التاريخ: " + (tx.transactionDate ?: "غير محدد"), fontSize = 12.sp)
+                if (!tx.route.isNullOrBlank()) Text(tx.route, fontSize = 12.sp)
+                if (!tx.visaCountry.isNullOrBlank()) Text("الدولة: " + visaCountryLabel(tx.visaCountry), fontSize = 12.sp)
                 when {
                     tx.type == TxType.TICKET -> Text(
                         passengerNamesLabel,
@@ -907,6 +972,7 @@ private fun PassengersScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
         OutlinedTextField(
             search, { search = it }, Modifier.fillMaxWidth(),
             label = { Text("بحث بالاسم / الاسم البديل / الهاتف / الجواز / ID") },
+            trailingIcon = { SearchClear(search) { search = "" } },
             leadingIcon = { Icon(Icons.Rounded.Search, null) },
             singleLine = true
         )
@@ -1947,13 +2013,34 @@ private fun BulkDependentPicker(
 @Composable
 private fun PaymentsScreen(vm: MainViewModel, onDetail: (String) -> Unit) {
     val all by vm.transactions.collectAsState()
-    val payments = all.filter { it.type == TxType.PAYMENT }
-    Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    var search by remember { mutableStateOf("") }
+    var currency by remember { mutableStateOf<Currency?>(null) }
+    var from by remember { mutableStateOf("") }
+    var to by remember { mutableStateOf("") }
+    var newest by remember { mutableStateOf(true) }
+    val payments = remember(all, search, currency, from, to, newest) {
+        OperationFilters.sorted(all.filter { it.type == TxType.PAYMENT && (currency == null || it.currency == currency) &&
+            OperationFilters.inPeriod(it, from, to) && OperationFilters.matches(it, search) }, newest)
+    }
+    Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("التسديدات", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Text("المطابقة تقريبية والتأكيد النهائي يدوي.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(payments, key = { it.id }) { tx ->
-                TransactionCard(vm, tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
+        OutlinedTextField(search, { search = it }, Modifier.fillMaxWidth(),
+            label = { Text("بحث برقم العملية / المبلغ / التاريخ") }, singleLine = true,
+            leadingIcon = { Icon(Icons.Rounded.Search, null) }, trailingIcon = { SearchClear(search) { search = "" } })
+        OperationFilterBar(currency, { currency = it }, from, { from = it }, to, { to = it }, newest, { newest = it })
+        CurrencyTotals("مجموع التسديدات", payments.filter { it.currency == Currency.USD }.sumOf { it.amount },
+            payments.filter { it.currency == Currency.IQD }.sumOf { it.amount }, currency)
+        Text(payments.size.toString() + " عملية تسديد", fontSize = 12.sp)
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (payments.isEmpty()) item { Text("لا توجد تسديدات مطابقة") }
+            payments.groupBy { it.transactionDate ?: "بدون تاريخ" }.forEach { (date, rows) ->
+                item(key = "date:" + date) {
+                    Text(date + " • " + rows.groupBy { it.currency }.entries.joinToString(" | ") { (c, list) -> formatMoney(list.sumOf { it.amount }, c) },
+                        fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+                items(rows, key = { it.id }) { tx ->
+                    TransactionCard(vm, tx, onDetail = { onDetail(tx.id) }, onReview = { vm.setReview(tx.id, ReviewState.REVIEWED) })
+                }
             }
         }
     }
@@ -2467,6 +2554,7 @@ private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
     val rules by vm.rules.collectAsState()
     val airlines by vm.airlines.collectAsState()
     var editing by remember { mutableStateOf<CommissionRule?>(null) }
+    var deleteTarget by remember { mutableStateOf<CommissionRule?>(null) }
     var adding by remember { mutableStateOf(false) }
     var catalogOpen by remember { mutableStateOf(false) }
 
@@ -2511,6 +2599,7 @@ private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
                     Text(RulePeriods.label(rule.effectiveFrom, rule.effectiveTo), fontSize = 13.sp)
                     Text("الوجهة: " + (rule.destination ?: "الكل") + " • العملة: " + (rule.currency?.name ?: "الكل"), fontSize = 13.sp)
                     Text(if (rule.active) "مفعّل" else "معطّل", color = if (rule.active) Good else Warn)
+                    TextButton(onClick = { deleteTarget = rule }) { Icon(Icons.Rounded.Delete, null); Text("حذف القاعدة", color = Bad) }
                     TextButton(onClick = { editing = rule.copy(id = "new", effectiveFrom = null, effectiveTo = null) }) { Text("نسخ لفترة جديدة") }
                     if (rule.direction != "ANY") Text("الاتجاه: " + if (rule.direction == "REVERSE") "عكسي" else "طبيعي", fontSize = 12.sp)
                     rule.note?.takeIf { it.isNotBlank() }?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -2519,6 +2608,12 @@ private fun CommissionSettings(vm: MainViewModel, onBack: () -> Unit) {
         }
     }
 
+    deleteTarget?.let { target ->
+        AlertDialog(onDismissRequest = { deleteTarget = null }, title = { Text("حذف قاعدة العمولة؟") },
+            text = { Text(target.airline + " • " + ruleLabel(target) + "\nتبقى حسابات العمليات القديمة محفوظة. لن تُستخدم القاعدة للعمليات الجديدة.") },
+            confirmButton = { TextButton(onClick = { vm.deleteRule(target.id); deleteTarget = null }) { Text("حذف", color = Bad) } },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("إلغاء") } })
+    }
     editing?.let { rule ->
         CommissionRuleDialog(vm, rule, airlines, onDismiss = { editing = null })
     }
@@ -2816,7 +2911,7 @@ private fun FareMemorySettings(vm: MainViewModel, onBack: () -> Unit) {
     val revision by vm.settingsRevision.collectAsState()
     var search by remember { mutableStateOf("") }
     var iqdTolerance by remember(revision) { mutableStateOf(vm.setting("fare_memory_iqd_tolerance", "500")) }
-    var usdTolerance by remember(revision) { mutableStateOf(vm.setting("fare_memory_usd_tolerance", "0.50")) }
+    var usdTolerance by remember(revision) { mutableStateOf(vm.setting("fare_memory_usd_tolerance", "1.0")) }
     var deleteTarget by remember { mutableStateOf<FareMemory?>(null) }
     val rows = remember(revision) { vm.fareMemories() }
     val visible = remember(rows, search) {
@@ -2838,7 +2933,7 @@ private fun FareMemorySettings(vm: MainViewModel, onBack: () -> Unit) {
         item {
             SettingsInfoCard(
                 "Base Fare الذكي",
-                "يتعلم من التذاكر السابقة والجديدة حسب شركة الطيران + المسار + العملة + نوع المسافر + Total لكل مسافر. إذا تغيّر Total بشكل واضح يحفظ نموذجًا جديدًا ولا يستبدل الأسعار القديمة."
+                "يتعلم من التذاكر السابقة والجديدة حسب شركة الطيران + المسار + العملة + نوع المسافر + Total لكل مسافر. المطابقة ضمن دولار واحد افتراضيًا؛ السعر الأقرب ثم التاريخ الأقرب والأحدث. تبقى الأسعار والتواريخ المختلفة محفوظة، ولا يغيّر التعلم قواعد العمولة الرسمية."
             )
         }
         item {
@@ -2868,7 +2963,7 @@ private fun FareMemorySettings(vm: MainViewModel, onBack: () -> Unit) {
                             modifier = Modifier.weight(1f),
                             onClick = {
                                 vm.setSetting("fare_memory_iqd_tolerance", iqdTolerance.toDoubleOrNull()?.coerceAtLeast(0.0)?.toString() ?: "500")
-                                vm.setSetting("fare_memory_usd_tolerance", usdTolerance.toDoubleOrNull()?.coerceAtLeast(0.0)?.toString() ?: "0.50")
+                                vm.setSetting("fare_memory_usd_tolerance", usdTolerance.toDoubleOrNull()?.coerceAtLeast(0.0)?.toString() ?: "1.0")
                             }
                         ) {
                             Icon(Icons.Rounded.Save, null)
@@ -3821,7 +3916,7 @@ private fun TransactionDetailDialog(
         val nextAuto = mutableSetOf<String>()
         details.forEach { detail ->
             val match = learnedFareMatches[detail.passenger.id]
-            if (detail.baseFare == null && match != null) {
+            if (detail.baseFare == null && match != null && !next.containsKey(detail.passenger.id)) {
                 next[detail.passenger.id] = compactNumber(match.memory.baseFare)
                 nextAuto += detail.passenger.id
             }

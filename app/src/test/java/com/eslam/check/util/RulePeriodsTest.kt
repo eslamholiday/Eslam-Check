@@ -44,6 +44,11 @@ class RulePeriodsTest {
     @Test fun datedRulesDoNotFallBackToStaleTimelessPrice() {
         assertNull(select(listOf(rule("legacy", null, null), rule("dated", "2026-01-01", "2026-06-16")), "2026-07-01"))
     }
+    @Test fun officialRuleWinsOverLearnedRule() {
+        val official = rule("official", null, null, 7.0)
+        val learned = rule("learned", null, null, 9.0).copy(learned = true, destination = "AMM")
+        assertEquals("official", select(listOf(official, learned), "2026-10-05")?.id)
+    }
     @Test fun visaUsesIssueDateTypeAndCurrency() {
         val a = VisaPriceRule("a", "UAE", price = 75.0, effectiveFrom = "2026-01-01", effectiveTo = "2026-06-15")
         val b = a.copy(id = "b", price = 80.0, effectiveFrom = "2026-06-16", effectiveTo = null)
