@@ -24,6 +24,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _transactions = MutableStateFlow<List<Transaction>>(emptyList())
     val transactions: StateFlow<List<Transaction>> = _transactions.asStateFlow()
 
+    private val _operationSearchIndex = MutableStateFlow<Map<String, String>>(emptyMap())
+    val operationSearchIndex: StateFlow<Map<String, String>> = _operationSearchIndex.asStateFlow()
+
     private val _passengers = MutableStateFlow<List<Passenger>>(emptyList())
     val passengers: StateFlow<List<Passenger>> = _passengers.asStateFlow()
 
@@ -53,7 +56,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun refresh(search: String = "", types: Set<TxType> = emptySet(), states: Set<ReviewState> = emptySet()) {
         viewModelScope.launch(Dispatchers.IO) {
             db.ensureFareMemoryInitialized()
-            _transactions.value = db.transactions(search = search, types = types, reviewStates = states, limit = 1000)
+            _operationSearchIndex.value = db.operationSearchIndex()
+            _transactions.value = db.transactions(search = search, types = types, reviewStates = states, limit = Int.MAX_VALUE)
             _passengers.value = db.allPassengers(500)
             _stats.value = db.dashboardStats()
             _rules.value = db.rules()
@@ -259,6 +263,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _stats.value = result.second
             }
             onComplete(result != null)
+        }
+    }
+
+    fun deleteRule(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                db.deleteRule(id)
+                _message.value = "تم حذف القاعدة مع حفظ حسابات العمليات السابقة"
+                refresh()
+            } catch (e: Exception) { _message.value = "تعذر حذف القاعدة: " + e.message }
         }
     }
 

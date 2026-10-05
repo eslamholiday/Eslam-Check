@@ -44,6 +44,7 @@ jobs:
           echo "Actual certificate: $actual"
           test -n "$actual"
           test "$expected" = "$actual"
+          test "$actual" = "5397d145eeba22564f55c4e2a28948c6b80a44814e95799efe3f2757ef27aef5"
           echo "APK signature matches retained key: $actual"
       - uses: actions/upload-artifact@v4
         with:

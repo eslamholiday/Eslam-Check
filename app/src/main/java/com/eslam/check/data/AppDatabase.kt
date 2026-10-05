@@ -8,12 +8,13 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
 import java.util.UUID
 import com.eslam.check.util.RulePeriods
+import com.eslam.check.util.FareMemoryMatcher
 
-class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 12) {
+class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "eslam_check.db", null, 13) {
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         val currentVersion = db.version
-        if (currentVersion in 1 until 12) {
+        if (currentVersion in 1 until 13) {
             try {
                 db.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
                     if (cursor.moveToFirst()) { /* force checkpoint result */ }
@@ -21,7 +22,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             } catch (_: Exception) { }
             try {
                 val backupDir = java.io.File(context.filesDir, "backups").apply { mkdirs() }
-                val backup = java.io.File(backupDir, "preupgrade-v" + currentVersion + "-to-v12.db")
+                val backup = java.io.File(backupDir, "preupgrade-v" + currentVersion + "-to-v13.db")
                 val source = context.getDatabasePath("eslam_check.db")
                 if (source.exists() && !backup.exists()) source.copyTo(backup, overwrite = false)
             } catch (_: Exception) { }
@@ -614,8 +615,13 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             """.trimIndent())
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_fare_memory_lookup ON fare_memory(airline_key, route_key, currency, passenger_type, total_amount, blocked)")
             putSettingIfMissing(db, "fare_memory_iqd_tolerance", "500")
-            putSettingIfMissing(db, "fare_memory_usd_tolerance", "0.50")
+            putSettingIfMissing(db, "fare_memory_usd_tolerance", "1.0")
             putSettingIfMissing(db, "fare_memory_initialized", "false")
+        }
+
+        if (oldVersion < 13) {
+            putSetting(db, "fare_memory_usd_tolerance", "1.0")
+            putSetting(db, "fare_memory_initialized", "false")
         }
 
     }
@@ -627,7 +633,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
         putSetting(db, "visa_usd_tolerance", "0.01")
         putSetting(db, "visa_iqd_tolerance", "1000")
         putSetting(db, "fare_memory_iqd_tolerance", "500")
-        putSetting(db, "fare_memory_usd_tolerance", "0.50")
+        putSetting(db, "fare_memory_usd_tolerance", "1.0")
         putSetting(db, "fare_memory_initialized", "false")
         putSetting(db, "issuer_whatsapp", "")
         putSetting(db, "issuer_contact_type", "GROUP")
@@ -1135,16 +1141,8 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
                 updatedAt = c.l("updated_at")
             )
         }
-        val best = candidates.firstOrNull() ?: return null
-        val bestDiff = kotlin.math.abs(best.totalAmount - total)
-        val baseTolerance = if (tx.currency == Currency.USD) 0.01 else 1.0
-        val ambiguityWindow = kotlin.math.max(0.01, tolerance * 0.20)
-        val ambiguous = if (best.pinned) false else candidates.drop(1).any { other ->
-            !other.pinned &&
-                kotlin.math.abs(kotlin.math.abs(other.totalAmount - total) - bestDiff) <= ambiguityWindow &&
-                kotlin.math.abs(other.baseFare - best.baseFare) > baseTolerance
-        }
-        return FareMemoryMatch(best, bestDiff, ambiguous)
+        return FareMemoryMatcher.choose(candidates, total, detail.baseFare, tx.transactionDate, tolerance)
+
     }
 
     fun rebuildFareMemory(): Int {
@@ -1203,10 +1201,11 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             """
                 SELECT id FROM fare_memory
                 WHERE blocked=0 AND airline_key=? AND route_key=? AND currency=? AND passenger_type=?
-                  AND ABS(total_amount-?)<=? AND ABS(base_fare-?)<=?
-                ORDER BY pinned DESC, ABS(total_amount-?) ASC, sample_count DESC LIMIT 1
+                  AND ABS(total_amount-?)<0.000001 AND ABS(base_fare-?)<0.000001
+                  AND COALESCE(last_seen_date,'')=?
+                ORDER BY pinned DESC LIMIT 1
             """.trimIndent(),
-            arrayOf(airlineKey, routeKey, tx.currency.name, passengerType, total.toString(), tolerance.toString(), base.toString(), baseTolerance.toString(), total.toString())
+            arrayOf(airlineKey, routeKey, tx.currency.name, passengerType, total.toString(), base.toString(), tx.transactionDate.orEmpty())
         ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
 
         val now = System.currentTimeMillis()
@@ -1229,12 +1228,10 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             }
             if (!found) return false
             val nextCount = previousCount + 1
-            val averagedTotal = if (previousCount <= 0) total
-                else ((previousTotal * previousCount) + total) / nextCount.toDouble()
             writableDatabase.update("fare_memory", ContentValues().apply {
                 put("airline_label", tx.airline!!.trim())
                 put("route_label", tx.route!!.trim())
-                put("total_amount", averagedTotal)
+                put("total_amount", total)
                 put("base_fare", base)
                 put("sample_count", nextCount)
                 put("first_seen_date", earlierDate(previousFirst, tx.transactionDate))
@@ -1294,7 +1291,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
     }
 
     private fun fareTolerance(currency: Currency): Double =
-        if (currency == Currency.USD) setting("fare_memory_usd_tolerance", "0.50").toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.50
+        if (currency == Currency.USD) setting("fare_memory_usd_tolerance", "1.0").toDoubleOrNull()?.coerceAtLeast(0.0) ?: 1.0
         else setting("fare_memory_iqd_tolerance", "500").toDoubleOrNull()?.coerceAtLeast(0.0) ?: 500.0
 
     private fun fareAirlineKey(value: String?): String? =
@@ -1321,7 +1318,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             raw in setOf("ADT", "ADULT", "A", "بالغ", "بالغين") || raw.contains("ADULT") -> "ADT"
             raw in setOf("CHD", "CHILD", "C", "طفل", "أطفال", "اطفال") || raw.contains("CHILD") -> "CHD"
             raw in setOf("INF", "INFANT", "I", "رضيع", "رضع") || raw.contains("INFANT") -> "INF"
-            raw.isBlank() -> "ADT"
+            raw.isBlank() -> "UNKNOWN"
             else -> raw
         }
     }
@@ -1510,6 +1507,22 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
         readableDatabase.rawQuery("SELECT * FROM transactions WHERE id=? LIMIT 1", arrayOf(id)).use {
             return if (it.moveToFirst()) it.toTransaction() else null
         }
+    }
+
+    fun operationSearchIndex(): Map<String, String> {
+        val out = mutableMapOf<String, String>()
+        readableDatabase.rawQuery("""
+            SELECT tp.tx_id, p.name, tp.source_name, p.phone, p.passport, tp.document_no, tp.product,
+                (SELECT GROUP_CONCAT(a.value, ' ') FROM passenger_aliases a WHERE a.passenger_id=p.id) AS aliases
+            FROM tx_passengers tp JOIN passengers p ON p.id=tp.passenger_id
+        """.trimIndent(), null).use { c ->
+            while (c.moveToNext()) {
+                val id = c.getString(0)
+                val text = (1..7).mapNotNull { if (c.isNull(it)) null else c.getString(it) }.joinToString(" ")
+                out[id] = out[id].orEmpty() + " " + text
+            }
+        }
+        return out
     }
 
     fun transactions(
@@ -1966,7 +1979,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
                 if (tx != null) snapshotFor(tx)?.let { put("commission_rule_snapshot", it) }
             } else {
                 putNull("reviewed_at")
-                putNull("commission_rule_snapshot")
+                if (tx?.commissionRuleSnapshot?.startsWith("DELETED:") != true) putNull("commission_rule_snapshot")
             }
         }
         writableDatabase.update("transactions", values, "id=?", arrayOf(id))
@@ -1974,7 +1987,7 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
     }
 
     private fun snapshotFor(tx: Transaction): String? {
-        if (tx.reviewState == ReviewState.REVIEWED && !tx.commissionRuleSnapshot.isNullOrBlank()) return tx.commissionRuleSnapshot
+        if ((tx.reviewState == ReviewState.REVIEWED || tx.commissionRuleSnapshot?.startsWith("DELETED:") == true) && !tx.commissionRuleSnapshot.isNullOrBlank()) return tx.commissionRuleSnapshot
         return when (tx.type) {
             TxType.TICKET -> ruleForTransaction(tx)?.let(::ruleSnapshot)
             TxType.VISA -> {
@@ -2095,6 +2108,38 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             )
         }
         return out
+    }
+
+    fun deleteRule(id: String): Boolean {
+        val database = writableDatabase
+        database.beginTransaction()
+        try {
+            val oldRules = rules()
+            if (oldRules.none { it.id == id }) return false
+            val ids = mutableListOf<String>()
+            database.rawQuery("SELECT id FROM transactions WHERE type=?", arrayOf(TxType.TICKET.name)).use { c ->
+                while (c.moveToNext()) ids += c.getString(0)
+            }
+            ids.forEach { txId ->
+                val tx = transaction(txId) ?: return@forEach
+                val removedRule = oldRules.first { it.id == id }
+                if (tx.commissionRuleSnapshot == ruleSnapshot(removedRule)) {
+                    database.update("transactions", ContentValues().apply {
+                        put("commission_rule_snapshot", "DELETED:" + tx.commissionRuleSnapshot)
+                    }, "id=?", arrayOf(txId))
+                }
+                if (tx.manualCommissionKind == null && tx.commissionRuleSnapshot.isNullOrBlank()) {
+                    val applicable = RulePeriods.commission(oldRules, tx.airline, tx.route, tx.currency, tx.transactionDate)
+                    if (applicable?.id == id) database.update("transactions", ContentValues().apply {
+                        put("commission_rule_snapshot", "DELETED:" + ruleSnapshot(applicable))
+                    }, "id=?", arrayOf(txId))
+                }
+            }
+            val deleted = database.delete("commission_rules", "id=?", arrayOf(id)) > 0
+            audit("commission_rule", id, "delete", "historical rules retained")
+            database.setTransactionSuccessful()
+            return deleted
+        } finally { database.endTransaction() }
     }
 
     fun saveRule(rule: CommissionRule) {
@@ -2699,8 +2744,8 @@ class AppDatabase(private val context: Context) : SQLiteOpenHelper(context, "esl
             return CommissionRule(id = "manual:" + tx.id, airline = tx.airline.orEmpty(),
                 kind = tx.manualCommissionKind, value = tx.manualCommissionValue ?: 0.0, currency = tx.currency)
         }
-        if (tx.reviewState == ReviewState.REVIEWED && !tx.commissionRuleSnapshot.isNullOrBlank()) {
-            val fields = tx.commissionRuleSnapshot.split("~")
+        if ((tx.reviewState == ReviewState.REVIEWED || tx.commissionRuleSnapshot?.startsWith("DELETED:") == true) && !tx.commissionRuleSnapshot.isNullOrBlank()) {
+            val fields = tx.commissionRuleSnapshot.removePrefix("DELETED:").split("~")
             if (fields.size >= 7) {
                 try {
                     return CommissionRule(id = "snapshot", airline = fields[0], kind = RuleKind.valueOf(fields[1]),

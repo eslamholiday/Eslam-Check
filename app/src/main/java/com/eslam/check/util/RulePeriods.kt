@@ -51,8 +51,9 @@ object RulePeriods {
         val scoped = rules.filter { it.active && it.airline.equals(airline, true) &&
             (it.currency == null || it.currency == currency) && destinationMatches(it.destination, route) &&
             (direction(it) == "ANY" || (rev != null && direction(it) == if (rev) "REVERSE" else "NORMAL")) }
-        val candidates = scoped.filter { includes(it.effectiveFrom, it.effectiveTo, issued) &&
-            (dated(it.effectiveFrom, it.effectiveTo) || scoped.none { other -> score(other) == score(it) && dated(other.effectiveFrom, other.effectiveTo) }) }
+        val authoritative = scoped.filter { !it.learned }.ifEmpty { scoped }
+        val candidates = authoritative.filter { includes(it.effectiveFrom, it.effectiveTo, issued) &&
+            (dated(it.effectiveFrom, it.effectiveTo) || authoritative.none { other -> score(other) == score(it) && dated(other.effectiveFrom, other.effectiveTo) }) }
         val best = candidates.maxOfOrNull(::score) ?: return null
         return candidates.filter { score(it) == best }.singleOrNull() // Never silently resolve ambiguous overlaps.
     }
